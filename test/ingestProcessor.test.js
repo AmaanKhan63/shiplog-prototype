@@ -45,6 +45,12 @@ describe('ingestProcessor', () => {
     expect(err.name).toBe('UnrecoverableError')
   })
 
+  it('attaches a parsed Retry-After (429) to the thrown error so backoff can honor it', async () => {
+    const err = await ingestProcessor(job({ tenantId, record: issue, poison: 'ratelimit' })).catch((e) => e)
+    expect(err.name).not.toBe('UnrecoverableError') // transient -> retried
+    expect(err.retryAfterMs).toBe(2000)
+  })
+
   it('honors a poison marker on the record itself', async () => {
     const err = await ingestProcessor(job({ tenantId, record: { ...issue, __poison: 'logical' } })).catch((e) => e)
     expect(err.name).toBe('UnrecoverableError')

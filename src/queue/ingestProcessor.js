@@ -23,16 +23,21 @@ export async function ingestProcessor(job) {
     const injected = poison ?? record?.__poison
     if (injected === 'transient') throw new TransientError('injected transient failure', { statusCode: 503 })
     if (injected === 'logical') throw new LogicalError('injected logical failure')
+    if (injected === 'ratelimit') {
+      throw Object.assign(new Error('rate limited'), { statusCode: 429, headers: { 'retry-after': '2' } })
+    }
 
     const normalized = normalizeGithubRecord(record)
     return await ingestEvent(normalized, { tenantId })
   } catch (err) {
-    const { kind } = classifyError(err)
+    const { kind, retryAfterMs } = classifyError(err)
     if (kind === 'logical') {
       const unrecoverable = new UnrecoverableError(err.message)
       unrecoverable.cause = err
       throw unrecoverable
     }
+    // Surface the classified Retry-After on the error so backoffStrategy honors it.
+    if (retryAfterMs != null && err.retryAfterMs == null) err.retryAfterMs = retryAfterMs
     throw err // transient → let BullMQ retry with backoff
   }
 }
