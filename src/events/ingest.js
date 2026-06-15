@@ -46,6 +46,11 @@ export async function ingestEvent(input, { tenantId } = {}) {
   }
 
   // 2) Classify against the latest known version of this entity.
+  // NOTE for M3/M6: occurredAt is created_at for issues/PRs and is therefore
+  // identical across versions, so this sort tie-breaks on _id (insertion order).
+  // That's fine for forward ingestion, but current-state *reads* (latest row per
+  // entity) must order by `version`, not _id — otherwise a stale version that is
+  // replayed *after* a newer one would read back as current.
   const latest = await Event.findOne({ tenantId, source: ev.source, externalId: ev.externalId })
     .sort({ occurredAt: -1, _id: -1 })
     .select('contentHash')
