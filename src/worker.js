@@ -1,32 +1,37 @@
 import { config } from './config/env.js'
 import { connectDB, disconnectDB } from './db/connect.js'
 import { redisConnectionOptions } from './queue/connection.js'
-import { createDlqQueue } from './queue/queues.js'
+import { createIngestQueue, createDlqQueue } from './queue/queues.js'
 import { createIngestWorker } from './queue/ingestWorker.js'
+import { createNangoSyncWorker } from './queue/nangoSyncWorker.js'
+import { createNangoClient } from './nango/client.js'
 
 /**
- * The ingest worker — runs as a SEPARATE process from the API (`npm run worker`).
- * Durable, Redis-backed: jobs survive a crash and are retried with backoff; the
- * final failure is dead-lettered with full context.
+ * Worker process (separate from the API). Runs two workers:
+ *   - ingest:     normalize + idempotently upsert one record; retry/backoff/DLQ
+ *   - nango-sync: fetch changed records from Nango, fan out as ingest jobs
  */
 async function main() {
   await connectDB(config.mongoUri)
 
   const connection = redisConnectionOptions()
   const dlqQueue = createDlqQueue(connection)
-  const worker = createIngestWorker({ connection, dlqQueue })
-
-  // 'error' listeners so a transient Redis blip can't crash the process.
+  const ingestQueue = createIngestQueue(connection) // producer for the nango-sync worker
+  ingestQueue.on('error', (err) => console.error(`[worker] ingest queue error: ${err?.message}`))
   dlqQueue.on('error', (err) => console.error(`[worker] dlq error: ${err?.message}`))
 
-  await worker.waitUntilReady()
-  console.log(`[worker] ready  Mongo=${config.mongoUri}  Redis=${config.redisUrl}`)
-  console.log('[worker] processing the "ingest" queue (attempts:5, exponential backoff + jitter). Ctrl-C to stop.\n')
+  const worker = createIngestWorker({ connection, dlqQueue })
+  const nango = createNangoClient()
+  const nangoSyncWorker = createNangoSyncWorker({ connection, ingestQueue, nango })
+
+  await Promise.all([worker.waitUntilReady(), nangoSyncWorker.waitUntilReady()])
+  console.log(`[worker] ready  Mongo=${config.mongoUri}  Redis=${config.redisUrl}  Nango=${nango.fixtures ? 'fixtures' : 'live'}`)
+  console.log('[worker] processing "ingest" + "nango-sync" queues. Ctrl-C to stop.\n')
 
   const shutdown = async (sig) => {
     console.log(`\n[worker] ${sig} → shutting down gracefully...`)
-    await worker.close()
-    await dlqQueue.close()
+    await Promise.allSettled([worker.close(), nangoSyncWorker.close()])
+    await Promise.allSettled([ingestQueue.close(), dlqQueue.close()])
     await disconnectDB()
     process.exit(0)
   }

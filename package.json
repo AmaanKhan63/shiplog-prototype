@@ -16,12 +16,15 @@
     "inject": "node scripts/inject-failure.js",
     "dlq": "node scripts/show-dlq.js",
     "replay-demo": "node scripts/replay-demo.js",
+    "connect": "node scripts/connect.js",
+    "simulate-webhook": "node scripts/simulate-nango-webhook.js",
     "test": "vitest run",
     "test:integration": "vitest run --config vitest.integration.config.js",
     "test:watch": "vitest"
   },
   "license": "MIT",
   "dependencies": {
+    "@nangohq/node": "^0.70.6",
     "bullmq": "^5.78.1",
     "dotenv": "^17.4.2",
     "express": "^5.2.1",

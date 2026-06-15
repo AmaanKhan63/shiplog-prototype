@@ -10,9 +10,9 @@ observability.
 > Direction is **source → store only** (GitHub into Shiplog). No write-back, no
 > conflict resolution.
 
-This repo is built in milestones. **Milestones 0–3 are complete** (scaffold +
-idempotent event spine + BullMQ retry/backoff + DLQ + replay/backfill). See
-[Roadmap](#roadmap).
+This repo is built in milestones. **Milestones 0–4 are complete** (scaffold +
+idempotent event spine + BullMQ retry/backoff + DLQ + replay/backfill + real Nango
+webhook ingestion). See [Roadmap](#roadmap).
 
 ---
 
@@ -117,6 +117,73 @@ once." The failure is an **external toggle** (not baked into the payload), so
 `POST /dlq/:id/replay` re-enqueues the payload truly verbatim. (Conversely, an item
 dead-lettered by the `npm run inject` *payload* poison will re-fail on replay — the
 fault is in the payload, by design.)
+
+### Milestone 4 — real Nango GitHub ingestion
+
+**How it works.** Nango's sync webhook is a *notification* (it says "N records
+changed for connection X / model Y"), not the records themselves. So:
+
+```
+Nango  ──webhook(sync notification)──▶  POST /webhooks/nango
+                                          • verify X-Nango-Hmac-Sha256 (timingSafeEqual)
+                                          • 202 immediately
+                                          • enqueue a sync job
+                                                   │
+                                         nango-sync worker
+                                          • nango.listRecords({model, modifiedAfter, cursor})
+                                          • land raw_records + enqueue 1 ingest job per record
+                                                   │
+                                         ingest worker ─▶ normalize ─▶ idempotent upsert ─▶ events
+```
+
+So "one ingest job per record" happens in the **sync worker** (after the records
+API call), not in the webhook — the webhook stays fast. A duplicated webhook is
+harmless: same records → same idempotency keys → no duplicate events (at-least-once
+delivery, idempotent consumer — **no webhook-dedup logic needed**).
+
+**Try it locally without a Nango account** (fixture-backed; `NANGO_USE_FIXTURES`):
+
+```bash
+# .env: set NANGO_WEBHOOK_SECRET=anything   (so the signature can be verified)
+npm run worker                       # terminal 1 (runs ingest + nango-sync workers)
+npm start                            # terminal 2 (the API)
+npm run connect nc-local github      # store a connectionId on the demo tenant
+npm run simulate-webhook GithubIssue nc-local   # signs + POSTs a sync webhook
+curl -H "Authorization: Bearer demo-api-key" http://localhost:3000/events
+# -> 2 GithubIssue events flowed through the whole pipeline
+```
+
+**Wire real Nango (developer/cloud tier):**
+1. **Integration** — in the Nango dashboard, create a GitHub *integration* (note its
+   **integration id** = `providerConfigKey`) and enable a sync that produces records
+   (e.g. a `GithubIssue` model).
+2. **Connection** — authorize one GitHub *connection* (one per tenant). Note its
+   **connection id**, then register it: `npm run connect <connectionId> <integrationId>`.
+   This id must match exactly, or webhooks won't resolve to the tenant.
+3. **Secrets** — put `NANGO_SECRET_KEY` (Environment Settings) and
+   `NANGO_WEBHOOK_SECRET` (Environment Settings → Webhooks → **Signing key**) in
+   `.env`. With a real `NANGO_SECRET_KEY` set, the worker calls the live records API.
+4. **Webhook URL** — expose your local API and point Nango at it:
+   ```bash
+   ngrok http 3000
+   # set the Nango webhook URL (Environment Settings → Webhooks) to:
+   #   https://<your-ngrok-subdomain>.ngrok.app/webhooks/nango
+   ```
+5. **Verify** — trigger a sync in Nango (dashboard "Run sync", or push a commit/open
+   an issue in the connected repo). Watch the worker log
+   (`[nango-sync] … fetched N, enqueued N` → `[ok] … added`), then
+   `GET /events` — the records are now normalized events.
+
+**Two caveats worth knowing:**
+- *Signature*: verification implements Nango's **documented** scheme (HMAC-SHA256 of
+  the raw body, `X-Nango-Hmac-Sha256`, signing key) and is unit-tested against it —
+  but it has not been validated against a live webhook. If real webhooks return 401,
+  set `NANGO_DEBUG=true` to log computed-vs-received, or fall back to the SDK's
+  `nango.verifyIncomingWebhookRequest`.
+- *Record shape*: `normalizeGithubRecord` assumes a GitHub-API-ish field shape. If
+  your sync's model differs, the record fails Zod validation → **lands in the DLQ
+  with the raw payload**. Inspect it (`npm run dlq`), adjust the mapper to the real
+  fields, and **replay** (Milestone 3) — no data lost.
 
 ---
 
@@ -228,24 +295,32 @@ src/
     ingestProcessor.js   # normalize -> idempotent ingest; classify failures
     deadLetter.js        # terminal-failure detection + dead_letter persistence
     ingestWorker.js      # Worker factory: backoffStrategy + failed -> DLQ
+    nangoSyncWorker.js   # Worker factory: fetch records -> fan out ingest jobs
     replay.js            # replayDeadLetter + backfillConnection
+  nango/
+    verify.js            # X-Nango-Hmac-Sha256 verification (timingSafeEqual)
+    client.js            # @nangohq/node client (or fixture adapter)
+    syncProcessor.js     # listRecords -> land raw + enqueue per-record ingest
   fixtures/github.js     # static Nango-shaped GitHub records
-  app.js                 # Express app factory (incl. /dlq, replay, backfill)
+  app.js                 # Express app factory (webhook, /dlq, replay, backfill, /connections)
   server.js              # API entrypoint (queue producer)
-  worker.js              # ingest worker entrypoint (separate process)
+  worker.js              # worker entrypoint: ingest + nango-sync (separate process)
 scripts/
-  seed-and-verify.js     # `npm run verify`        (M1 idempotency demo)
-  enqueue-fixtures.js    # `npm run enqueue`
-  inject-failure.js      # `npm run inject <transient|logical>`
-  show-dlq.js            # `npm run dlq`
-  replay-demo.js         # `npm run replay-demo`   (M3 failure->replay->no-dup)
+  seed-and-verify.js        # `npm run verify`        (M1 idempotency demo)
+  enqueue-fixtures.js       # `npm run enqueue`
+  inject-failure.js         # `npm run inject <transient|logical>`
+  show-dlq.js               # `npm run dlq`
+  replay-demo.js            # `npm run replay-demo`   (M3 failure->replay->no-dup)
+  connect.js                # `npm run connect <connectionId> [integrationId]`
+  simulate-nango-webhook.js # `npm run simulate-webhook [model] [connectionId]`
 test/                    # vitest suite (runs against a local test DB)
 ```
 
-### HTTP API (tenant-scoped; every route needs an API key)
+### HTTP API
 
-`GET /health` · `GET /events` · `GET /dlq` · `POST /dlq/:id/replay` ·
-`POST /connections/:id/backfill`
+Public: `GET /health`; `POST /webhooks/nango` (Nango-signature authenticated).
+Tenant-scoped (API key): `GET /events` · `GET /dlq` · `POST /dlq/:id/replay` ·
+`POST /connections/:id/backfill` · `POST /connections`
 
 ## Testing
 
@@ -270,7 +345,8 @@ Two tiers:
   persistence, separate worker process, failure injection
 - **M3 ✅** replay / backfill — `POST /dlq/:id/replay`, `POST /connections/:id/backfill`,
   raw layer, the failure → replay → no-duplicate demo
-- **M4** real Nango GitHub integration (webhooks + signature verify)
+- **M4 ✅** real Nango GitHub integration — `POST /webhooks/nango` (HMAC verify),
+  nango-sync worker (records API → per-record ingest), fixture-backed local mode
 - **M5** reconciliation poller (cursor advances on success only)
 - **M6** React dashboard + observability
 - **M7** README polish + negative isolation test + demo rehearsal

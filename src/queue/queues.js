@@ -2,6 +2,7 @@ import { Queue } from 'bullmq'
 
 export const INGEST_QUEUE = 'ingest'
 export const DLQ = 'dlq'
+export const NANGO_SYNC_QUEUE = 'nango-sync'
 
 /**
  * Default options for every ingest job. `attempts` + a `custom` backoff type are
@@ -24,4 +25,10 @@ export function createDlqQueue(connection) {
     connection,
     defaultJobOptions: { removeOnComplete: { count: 1000 }, removeOnFail: { count: 5000 } },
   })
+}
+
+// Sync notifications from Nango webhooks: a worker fetches the changed records via
+// the records API and fans them out as per-record ingest jobs.
+export function createNangoSyncQueue(connection) {
+  return new Queue(NANGO_SYNC_QUEUE, { connection, defaultJobOptions: ingestJobOptions })
 }
