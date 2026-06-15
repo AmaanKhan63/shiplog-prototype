@@ -46,14 +46,15 @@ export function normalizeGithubRecord(record: NangoRecord): NormalizedEventInput
       }
 
     case 'GithubCommit':
+    case 'Commit':
       return {
         source: 'github',
         type: 'commit',
         externalId: `commit:${r.sha}`,
-        actor: r.author?.login ?? r.commit?.author?.name ?? 'unknown',
-        title: (r.commit?.message ?? '').split('\n')[0],
+        actor: r.author_login ?? r.author_name ?? 'unknown',
+        title: (r.message ?? '').split('\n')[0],
         url: r.html_url,
-        occurredAt: new Date(r.commit?.author?.date),
+        occurredAt: new Date(r.author_date),
         version: r.sha,
       }
 

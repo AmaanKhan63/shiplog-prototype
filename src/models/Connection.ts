@@ -22,7 +22,7 @@ const connectionSchema = new Schema(
     nangoIntegrationId: { type: String },
     status: { type: String, default: 'active' },
     // Nango models this connection syncs — what the reconciliation poller pulls.
-    models: { type: [String], default: ['GithubIssue'] },
+    models: { type: [String], default: ['Commit'] },
   },
   { timestamps: true }
 )
