@@ -1,0 +1,70 @@
+import { describe, it, expect, beforeAll, afterAll } from 'vitest'
+import mongoose from 'mongoose'
+import { connectTestDB, dropAndClose } from './helpers/db.js'
+import { Tenant, Connection, SyncState, RawRecord, Event, SyncRun, DeadLetter } from '../src/models/index.js'
+import type { IEvent } from '../src/models/Event.js'
+
+beforeAll(async () => {
+  await connectTestDB()
+  // Build indexes explicitly (autoIndex is off) before asserting on them /
+  // exercising uniqueness.
+  await Promise.all([
+    Tenant.syncIndexes(), Connection.syncIndexes(), SyncState.syncIndexes(),
+    RawRecord.syncIndexes(), Event.syncIndexes(), SyncRun.syncIndexes(), DeadLetter.syncIndexes(),
+  ])
+})
+afterAll(dropAndClose)
+
+const keysOf = (indexes: any[]) => indexes.map((i: any) => Object.keys(i.key).join(','))
+
+describe('models are registered', () => {
+  it('registers all seven collections from spec section D', () => {
+    const names = Object.keys(mongoose.models)
+    for (const m of ['Tenant', 'Connection', 'SyncState', 'RawRecord', 'Event', 'SyncRun', 'DeadLetter']) {
+      expect(names).toContain(m)
+    }
+  })
+})
+
+describe('Event indexes', () => {
+  it('has a UNIQUE index on idempotencyKey', async () => {
+    const indexes = await Event.collection.indexes()
+    const idem = indexes.find((i) => Object.keys(i.key).join(',') === 'idempotencyKey')
+    expect(idem).toBeTruthy()
+    expect(idem!.unique).toBe(true)
+  })
+
+  it('has compound {tenantId, externalId} and {tenantId, occurredAt} indexes', async () => {
+    const keys = keysOf(await Event.collection.indexes())
+    expect(keys).toContain('tenantId,externalId')
+    expect(keys).toContain('tenantId,occurredAt')
+  })
+
+  it('enforces idempotencyKey uniqueness at the database level', async () => {
+    const tenantId = new mongoose.Types.ObjectId()
+    const doc = {
+      tenantId, idempotencyKey: 'dup-key-1', type: 'issue', source: 'github',
+      externalId: 'issue:1', contentHash: 'h1', actor: 'a', title: 't',
+      url: 'https://x/1', occurredAt: new Date(), version: 'v1',
+    } as unknown as IEvent
+    await Event.create(doc)
+    await expect(Event.create({ ...doc, _id: undefined, externalId: 'issue:2', contentHash: 'h2' } as unknown as IEvent))
+      .rejects.toThrow(/E11000|duplicate key/i)
+  })
+})
+
+describe('SyncState index', () => {
+  it('has a unique {tenantId, connectionId, model} cursor index', async () => {
+    const indexes = await SyncState.collection.indexes()
+    expect(keysOf(indexes)).toContain('tenantId,connectionId,model')
+    expect(indexes.find((i: any) => Object.keys(i.key).join(',') === 'tenantId,connectionId,model')!.unique).toBe(true)
+  })
+})
+
+describe('SyncRun counts shape', () => {
+  it('defaults counts to zeros', async () => {
+    const run = await SyncRun.create({ tenantId: new mongoose.Types.ObjectId(), trigger: 'reconcile' })
+    const counts = run.counts as any
+    expect(counts.toObject ? counts.toObject() : counts).toMatchObject({ added: 0, updated: 0, deleted: 0, failed: 0 })
+  })
+})

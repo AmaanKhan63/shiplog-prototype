@@ -1,7 +1,8 @@
 # shiplog-sync
 
 A one-directional ingestion + resilience layer for [Shiplog](https://useshiplog.com),
-built **on top of Nango** in MERN. Nango owns the GitHub connection and base sync;
+built **on top of Nango** in MERN (TypeScript, run via tsx). Nango owns the GitHub
+connection and base sync;
 this layer turns Nango's per-source records into a unified, deduped, tenant-scoped
 **event spine** with the enterprise guarantees: idempotent writes, dedup, retries +
 backoff, a dead-letter queue, replay/backfill, hard multi-tenant isolation, and
@@ -27,6 +28,7 @@ npm install
 cp .env.example .env        # MONGODB_URI, REDIS_URL (a local .env is already present)
 npm run verify              # the Milestone 1 demo (below)
 npm test                    # full test suite (queue integration tests skip if Redis is down)
+npm run typecheck           # tsc --noEmit (TypeScript; the app itself runs via tsx, no build step)
 ```
 
 ### The Milestone 1 demo — idempotency no-op
@@ -330,50 +332,48 @@ a distinction worth naming).
 
 ## Layout
 
+TypeScript throughout, run directly with **tsx** (no build step); `tsconfig.json`
+is `strict` + `isolatedModules`, type-check with `npm run typecheck`.
+
 ```
 src/
-  config/env.js          # env config (dotenv)
-  db/connect.js          # mongoose connect/disconnect
-  models/                # 7 collections from spec §D, with indexes
-  middleware/tenantAuth.js   # API key -> tenantId
-  repository/withTenant.js   # tenant-scoped query wrapper (app-level RLS)
-  normalize/github.js    # Nango GitHub record -> typed event
+  config/env.ts          # env config (dotenv)
+  db/connect.ts          # mongoose connect/disconnect
+  models/                # 7 collections from spec §D, with indexes + document interfaces
+  types/express.d.ts     # augments Express Request with tenant / tenantId
+  middleware/tenantAuth.ts   # API key -> tenantId
+  repository/withTenant.ts   # tenant-scoped query wrapper (app-level RLS)
+  normalize/github.ts    # Nango GitHub record -> typed event
   events/
-    schema.js            # NormalizedEventSchema (Zod)
-    hash.js              # idempotencyKey + contentHash
-    ingest.js            # idempotent upsert + content-hash dedup
-    raw.js               # land raw_records (immutable raw / backfill source)
+    schema.ts            # NormalizedEventSchema (Zod) + z.infer types (one source of truth)
+    hash.ts              # idempotencyKey + contentHash
+    ingest.ts            # idempotent upsert + content-hash dedup
+    raw.ts               # land raw_records (immutable raw / backfill source)
   queue/
-    connection.js        # ioredis (Upstash-compatible)
-    queues.js            # ingest + dlq queues, default job options
-    errors.js            # TransientError/LogicalError + classifyError
-    backoff.js           # exponential backoff + jitter (pure)
-    ingestProcessor.js   # normalize -> idempotent ingest; classify failures
-    deadLetter.js        # terminal-failure detection + dead_letter persistence
-    ingestWorker.js      # Worker factory: backoffStrategy + failed -> DLQ
-    nangoSyncWorker.js   # Worker factory: fetch records -> fan out ingest jobs
-    reconcileSweep.js    # sweep fan-out + deterministic per-(conn,model) reconcile job
-    reconcileWorker.js   # Worker factory: sweep/reconcile dispatch + sweep scheduler
-    replay.js            # replayDeadLetter + backfillConnection
+    types.ts             # job-payload types (IngestJobData, ReconcileJobData, ...) + JobView
+    connection.ts        # ioredis (Upstash-compatible)
+    queues.ts            # ingest + dlq queues, default job options
+    errors.ts            # TransientError/LogicalError + classifyError
+    backoff.ts           # exponential backoff + jitter (pure)
+    ingestProcessor.ts   # normalize -> idempotent ingest; classify failures
+    deadLetter.ts        # terminal-failure detection + dead_letter persistence
+    ingestWorker.ts      # Worker factory: backoffStrategy + failed -> DLQ
+    nangoSyncWorker.ts   # Worker factory: fetch records -> fan out ingest jobs
+    reconcileSweep.ts    # sweep fan-out + deterministic per-(conn,model) reconcile job
+    reconcileWorker.ts   # Worker factory: sweep/reconcile dispatch + sweep scheduler
+    replay.ts            # replayDeadLetter + backfillConnection
   nango/
-    verify.js            # X-Nango-Hmac-Sha256 verification (timingSafeEqual)
-    client.js            # @nangohq/node client (or fixture adapter)
-    syncProcessor.js     # listRecords -> land raw + enqueue per-record ingest (webhook)
-    reconcileProcessor.js # poll on sync_state cursor; checkpoint-after-write per page
-  fixtures/github.js     # static Nango-shaped GitHub records
-  app.js                 # Express app factory (webhook, /dlq, replay, backfill, reconcile, /connections)
-  server.js              # API entrypoint (queue producer)
-  worker.js              # worker entrypoint: ingest + nango-sync + reconcile (separate process)
-scripts/
-  seed-and-verify.js        # `npm run verify`        (M1 idempotency demo)
-  enqueue-fixtures.js       # `npm run enqueue`
-  inject-failure.js         # `npm run inject <transient|logical>`
-  show-dlq.js               # `npm run dlq`
-  replay-demo.js            # `npm run replay-demo`     (M3 failure->replay->no-dup)
-  reconcile-demo.js         # `npm run reconcile-demo`  (M5 both paths + cursor invariant)
-  connect.js                # `npm run connect <connectionId> [integrationId]`
-  simulate-nango-webhook.js # `npm run simulate-webhook [model] [connectionId]`
-test/                    # vitest suite (runs against a local test DB)
+    types.ts             # NangoRecord / NangoClientLike contract
+    verify.ts            # X-Nango-Hmac-Sha256 verification (timingSafeEqual)
+    client.ts            # @nangohq/node client (or fixture adapter)
+    syncProcessor.ts     # listRecords -> land raw + enqueue per-record ingest (webhook)
+    reconcileProcessor.ts # poll on sync_state cursor; checkpoint-after-write per page
+  fixtures/github.ts     # static Nango-shaped GitHub records
+  app.ts                 # Express app factory (webhook, /dlq, replay, backfill, reconcile, /connections)
+  server.ts              # API entrypoint (queue producer)
+  worker.ts              # worker entrypoint: ingest + nango-sync + reconcile (separate process)
+scripts/                 # *.ts, run via tsx (npm run verify | replay-demo | reconcile-demo | ...)
+test/                    # vitest suite (*.test.ts, runs against a local test DB)
 ```
 
 ### HTTP API
