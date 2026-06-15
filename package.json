@@ -15,6 +15,7 @@
     "enqueue": "node scripts/enqueue-fixtures.js",
     "inject": "node scripts/inject-failure.js",
     "dlq": "node scripts/show-dlq.js",
+    "replay-demo": "node scripts/replay-demo.js",
     "test": "vitest run",
     "test:integration": "vitest run --config vitest.integration.config.js",
     "test:watch": "vitest"

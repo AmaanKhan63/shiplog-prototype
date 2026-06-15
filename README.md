@@ -10,8 +10,9 @@ observability.
 > Direction is **source → store only** (GitHub into Shiplog). No write-back, no
 > conflict resolution.
 
-This repo is built in milestones. **Milestones 0–2 are complete** (scaffold +
-idempotent event spine + BullMQ retry/backoff + DLQ). See [Roadmap](#roadmap).
+This repo is built in milestones. **Milestones 0–3 are complete** (scaffold +
+idempotent event spine + BullMQ retry/backoff + DLQ + replay/backfill). See
+[Roadmap](#roadmap).
 
 ---
 
@@ -78,21 +79,63 @@ A `logical` failure skips retries entirely and is dead-lettered after 1 attempt.
 Retries are safe because the processor calls the same idempotent `ingestEvent` from
 Milestone 1 — re-processing can't duplicate.
 
+### The Milestone 3 demo — failure → DLQ → replay → no duplicate (the money shot)
+
+```bash
+npm run replay-demo
+```
+
+A single self-contained script (in-process worker + the real HTTP API) walks the
+whole sequence and prints the proof:
+
+```
+Step 1  Ingest the record (worker healthy)
+  event stored   _id            = 6a2ff95929ae6cc9bd983bf0
+                 idempotencyKey = f435e97c8ec0…48efd
+                 events = 1
+Step 2  Simulate a downstream outage, re-send the SAME record (failure ON)
+       [backoff] attempt 1 failed (transient) -> retry in 554ms
+       … 5 attempts …
+       [DLQ]  -> dead_letter … after 5 attempt(s)
+                 events = 1   (unchanged — the failed attempt wrote nothing)
+Step 3  Resolve the outage (failure OFF)
+Step 4  POST /dlq/<id>/replay   (re-enqueues the original payload verbatim)
+       [ok]   job 3 -> unchanged
+                 _id            = 6a2ff95929ae6cc9bd983bf0   (SAME row)
+                 idempotencyKey = f435e97c8ec0…48efd          (SAME key)
+                 events = 1   (UNCHANGED — no duplicate)
+Step 5  POST /connections/<id>/backfill   (reprocess from raw_records)
+                 events = 1   (UNCHANGED — backfill is idempotent too)
+
+✓ Replay used the same idempotency key and created no duplicate. One event, same row.
+```
+
+The proof is explicit: after replay the event has the **same `_id` and the same
+idempotency key** as the baseline — literally the same row, and the replayed job
+reports `unchanged`. "At-least-once delivery, idempotent consumer → effectively
+once." The failure is an **external toggle** (not baked into the payload), so
+`POST /dlq/:id/replay` re-enqueues the payload truly verbatim. (Conversely, an item
+dead-lettered by the `npm run inject` *payload* poison will re-fail on replay — the
+fault is in the payload, by design.)
+
 ---
 
 ## Architecture (so far)
 
 ```
-Nango-shaped records ─▶ ingest queue (BullMQ) ─▶ worker (separate process)
-                                                          │
-                                          normalize ─▶ Zod ─▶ idempotent upsert
-                                                          │
-                                  success ──────────────┐ │ ┌──── transient: retry
-                                                        ▼ ▼ ▼      (exp backoff + jitter)
-                                        events (deduped spine)   logical: no retry
-                                                            │
-                                              terminal failure ▼
-                                                   dead_letter (full context)
+Nango-shaped records ─▶ raw_records ─▶ ingest queue (BullMQ) ─▶ worker (process)
+                            │                                        │
+                            │                        normalize ─▶ Zod ─▶ idempotent upsert
+                            │                                        │
+                            │                success ─────────────┐  │  ┌──── transient: retry
+                            │                                      ▼  ▼  ▼      (backoff + jitter)
+                            │                      events (deduped spine)   logical: no retry
+                            │                            ▲                │
+   POST /connections/:id/backfill ──────────────────────┘   terminal failure ▼
+   (reprocess raw)                                              dead_letter (full context)
+                                                                        │
+                                       POST /dlq/:id/replay ◀───────────┘
+                                       (re-enqueue verbatim → same key → no dup)
 ```
 
 ### Data model (MongoDB collections, spec §D)
@@ -111,10 +154,18 @@ index. Each distinct source *version* is its own row, so:
 - Re-ingesting the same version is a guaranteed no-op (unique-index backstop,
   even under concurrent workers).
 - Replaying a *stale* version can never overwrite current state — it just lands (or
-  no-ops) as history. This is what makes the upcoming **failure → replay →
-  no-duplicate** demo (Milestone 3, the headline deliverable) correct rather than a
-  silent state regression. An upsert-latest model would revert current state when a
+  no-ops) as history. This is what makes the **failure → replay → no-duplicate**
+  demo (Milestone 3, the headline deliverable) correct rather than a silent state
+  regression. An upsert-latest model would revert current state when a
   failed-then-replayed old version arrives.
+
+**Replay re-enqueues the payload verbatim; backfill reprocesses raw_records.**
+`POST /dlq/:id/replay` puts the dead-lettered item's original payload back on the
+ingest queue unchanged — so the worker recomputes the *same* idempotency key and the
+write is a no-op against the unique index ("safe because writes are idempotent").
+`POST /connections/:id/backfill` re-enqueues every `raw_record` for a connection;
+because ingestion is idempotent, re-running never duplicates. Both are
+tenant-scoped (replaying another tenant's DLQ item is a 404).
 
 **Content-hash dedup distinguishes a real update from a no-op.**
 `contentHash` is computed over the *semantic* fields only (it excludes the `version`
@@ -168,6 +219,7 @@ src/
     schema.js            # NormalizedEventSchema (Zod)
     hash.js              # idempotencyKey + contentHash
     ingest.js            # idempotent upsert + content-hash dedup
+    raw.js               # land raw_records (immutable raw / backfill source)
   queue/
     connection.js        # ioredis (Upstash-compatible)
     queues.js            # ingest + dlq queues, default job options
@@ -176,17 +228,24 @@ src/
     ingestProcessor.js   # normalize -> idempotent ingest; classify failures
     deadLetter.js        # terminal-failure detection + dead_letter persistence
     ingestWorker.js      # Worker factory: backoffStrategy + failed -> DLQ
+    replay.js            # replayDeadLetter + backfillConnection
   fixtures/github.js     # static Nango-shaped GitHub records
-  app.js                 # Express app factory
-  server.js              # API entrypoint
+  app.js                 # Express app factory (incl. /dlq, replay, backfill)
+  server.js              # API entrypoint (queue producer)
   worker.js              # ingest worker entrypoint (separate process)
 scripts/
-  seed-and-verify.js     # `npm run verify`  (M1 idempotency demo)
+  seed-and-verify.js     # `npm run verify`        (M1 idempotency demo)
   enqueue-fixtures.js    # `npm run enqueue`
   inject-failure.js      # `npm run inject <transient|logical>`
   show-dlq.js            # `npm run dlq`
+  replay-demo.js         # `npm run replay-demo`   (M3 failure->replay->no-dup)
 test/                    # vitest suite (runs against a local test DB)
 ```
+
+### HTTP API (tenant-scoped; every route needs an API key)
+
+`GET /health` · `GET /events` · `GET /dlq` · `POST /dlq/:id/replay` ·
+`POST /connections/:id/backfill`
 
 ## Testing
 
@@ -209,7 +268,8 @@ Two tiers:
   content-hash dedup, fixtures, verify demo
 - **M2 ✅** BullMQ pipeline: retry/backoff + jitter, error classifier, DLQ
   persistence, separate worker process, failure injection
-- **M3** replay / backfill (failure → replay → no-duplicate)
+- **M3 ✅** replay / backfill — `POST /dlq/:id/replay`, `POST /connections/:id/backfill`,
+  raw layer, the failure → replay → no-duplicate demo
 - **M4** real Nango GitHub integration (webhooks + signature verify)
 - **M5** reconciliation poller (cursor advances on success only)
 - **M6** React dashboard + observability

@@ -29,8 +29,12 @@ export function createIngestWorker({
   baseMs = config.backoffBaseMs,
   concurrency = 5,
   logger = console,
+  getFailMode,
 } = {}) {
-  const worker = new Worker(INGEST_QUEUE, ingestProcessor, {
+  // getFailMode() is read per-job, so an external outage can be toggled live
+  // (used by the Milestone 3 replay demo); undefined in normal operation.
+  const processor = (job) => ingestProcessor(job, { failMode: getFailMode?.() })
+  const worker = new Worker(INGEST_QUEUE, processor, {
     connection,
     concurrency,
     settings: {

@@ -8,19 +8,24 @@ import { classifyError, TransientError, LogicalError } from './errors.js'
  * into the event spine. Idempotency (Milestone 1) is what makes retries and DLQ
  * replays safe — re-processing the same record can't duplicate.
  *
- * Failure injection (for the demo): `job.data.poison` or `record.__poison` set to
- * 'transient' | 'logical' forces the corresponding failure path.
+ * Failure injection:
+ *   - `opts.failMode` — an EXTERNAL toggle (Milestone 3 replay demo): simulates a
+ *     downstream outage independent of the payload, so it can be turned off and a
+ *     verbatim replay then succeeds.
+ *   - `job.data.poison` / `record.__poison` — a fault baked into the payload (M2
+ *     manual injection); such an item will re-fail on replay, by design.
+ * Values: 'transient' | 'logical' | 'ratelimit'.
  *
  * Error policy via the classifier:
  *   - logical  → wrapped in UnrecoverableError so BullMQ fails it immediately
  *                (straight to the DLQ, no retry)
  *   - transient→ rethrown unchanged so BullMQ retries it with backoff
  */
-export async function ingestProcessor(job) {
+export async function ingestProcessor(job, { failMode } = {}) {
   const { tenantId, record, poison } = job.data
 
   try {
-    const injected = poison ?? record?.__poison
+    const injected = failMode ?? poison ?? record?.__poison
     if (injected === 'transient') throw new TransientError('injected transient failure', { statusCode: 503 })
     if (injected === 'logical') throw new LogicalError('injected logical failure')
     if (injected === 'ratelimit') {

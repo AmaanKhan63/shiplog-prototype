@@ -51,6 +51,18 @@ describe('ingestProcessor', () => {
     expect(err.retryAfterMs).toBe(2000)
   })
 
+  it('fails via an external failMode toggle even when the payload is clean', async () => {
+    const errT = await ingestProcessor(job({ tenantId, record: issue }), { failMode: 'transient' }).catch((e) => e)
+    expect(errT.kind).toBe('transient')
+    const errL = await ingestProcessor(job({ tenantId, record: issue }), { failMode: 'logical' }).catch((e) => e)
+    expect(errL.name).toBe('UnrecoverableError')
+  })
+
+  it('ingests normally when failMode is null (the recovered state)', async () => {
+    const res = await ingestProcessor(job({ tenantId, record: issue }), { failMode: null })
+    expect(res.status).toBe('added')
+  })
+
   it('honors a poison marker on the record itself', async () => {
     const err = await ingestProcessor(job({ tenantId, record: { ...issue, __poison: 'logical' } })).catch((e) => e)
     expect(err.name).toBe('UnrecoverableError')
