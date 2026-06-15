@@ -20,12 +20,13 @@ export function normalizeGithubRecord(record: NangoRecord): NormalizedEventInput
   const r = record as Record<string, any>
 
   switch (model) {
-    case 'GithubIssue':
+    case 'GithubIssue': // fixtures use this name
+    case 'Issue':       // live Nango model name
       return {
         source: 'github',
         type: 'issue',
         externalId: `issue:${r.number}`,
-        actor: r.user?.login ?? 'unknown',
+        actor: r.user_login ?? r.user?.login ?? 'unknown',
         title: r.title,
         url: r.html_url,
         occurredAt: new Date(r.created_at),
