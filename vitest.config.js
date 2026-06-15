@@ -1,15 +1,16 @@
-import { defineConfig } from 'vitest/config'
+import { defineConfig, configDefaults } from 'vitest/config'
 
 export default defineConfig({
   test: {
     environment: 'node',
     include: ['test/**/*.test.js'],
-    // Integration tests share one local mongod + test DB. Run every file in a
-    // single fork, serially, so they never race on the same collections or on
-    // the shared mongoose connection handle.
+    // The live-Redis BullMQ end-to-end test is infrastructure-dependent and runs
+    // via `npm run test:integration`. The default suite stays Redis-free, fast,
+    // and reliable; the queue's *logic* is fully covered by deterministic unit
+    // tests (errors, backoff, processor, deadLetter).
+    exclude: [...configDefaults.exclude, '**/*.integration.test.js'],
+    // Mongo integration tests share one local mongod; run serially.
     fileParallelism: false,
-    pool: 'forks',
-    poolOptions: { forks: { singleFork: true } },
     hookTimeout: 30000,
     testTimeout: 30000,
   },

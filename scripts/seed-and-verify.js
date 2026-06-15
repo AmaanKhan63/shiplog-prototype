@@ -42,7 +42,7 @@ async function main() {
   const tenant = await Tenant.findOneAndUpdate(
     { apiKey: DEMO_TENANT.apiKey },
     { $setOnInsert: DEMO_TENANT },
-    { upsert: true, new: true }
+    { upsert: true, returnDocument: 'after' }
   )
   const tenantId = tenant._id
 

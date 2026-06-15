@@ -3,21 +3,28 @@
   "version": "0.1.0",
   "private": true,
   "type": "module",
-  "description": "One-directional ingestion + resilience layer for Shiplog, built on top of Nango (MERN). Milestones 0-1: scaffold + idempotent normalized event spine.",
+  "description": "One-directional ingestion + resilience layer for Shiplog, built on top of Nango (MERN). Milestones 0-2: scaffold, idempotent event spine, BullMQ retry/backoff + DLQ.",
   "engines": {
     "node": ">=20"
   },
   "scripts": {
     "start": "node src/server.js",
     "dev": "node --watch src/server.js",
+    "worker": "node src/worker.js",
     "verify": "node scripts/seed-and-verify.js",
+    "enqueue": "node scripts/enqueue-fixtures.js",
+    "inject": "node scripts/inject-failure.js",
+    "dlq": "node scripts/show-dlq.js",
     "test": "vitest run",
+    "test:integration": "vitest run --config vitest.integration.config.js",
     "test:watch": "vitest"
   },
   "license": "MIT",
   "dependencies": {
+    "bullmq": "^5.78.1",
     "dotenv": "^17.4.2",
     "express": "^5.2.1",
+    "ioredis": "^5.11.1",
     "mongoose": "^9.7.0",
     "zod": "^4.4.3"
   },
