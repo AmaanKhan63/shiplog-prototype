@@ -11,9 +11,9 @@ observability.
 > Direction is **source → store only** (GitHub into Shiplog). No write-back, no
 > conflict resolution.
 
-This repo is built in milestones. **Milestones 0–4 are complete** (scaffold +
+This repo is built in milestones. **Milestones 0–6 are complete** (scaffold +
 idempotent event spine + BullMQ retry/backoff + DLQ + replay/backfill + real Nango
-webhook ingestion). See [Roadmap](#roadmap).
+webhook ingestion + reconciliation poller + a React dashboard). See [Roadmap](#roadmap).
 
 ---
 
@@ -245,6 +245,45 @@ npm run reconcile-demo
 
 ---
 
+### Milestone 6 — the dashboard
+
+A minimal **React + React Query** dashboard (Vite) that makes the whole pipeline
+visible and operable from one page — and proves multi-tenant isolation by letting
+you switch tenants and watch the data change with nothing leaking.
+
+```bash
+npm run seed                                 # two isolated demo tenants, with data
+npm start                                    # terminal 1 — the API (:3000)
+npm run worker                               # terminal 2 — the worker (jobs actually run)
+cd dashboard && npm install && npm run dev   # terminal 3 — the dashboard (:5173)
+# open http://localhost:5173
+```
+
+One page, five panels — all scoped to the selected tenant's API key:
+
+- **Tenant switcher** — flips the API key every panel uses; switching from
+  *Acme Storefront* (5 events, a DLQ item) to *Globex Industries* (3 events, clean)
+  shows isolation at a glance. Every React Query key is namespaced by the active
+  key, so one tenant's rows can never bleed into another's view.
+- **Sync Control** — per connection, **Reconcile** (poll Nango on the durable
+  cursor) and **Backfill** (reprocess `raw_records`) buttons.
+- **Sync Runs** — status · added/updated/deleted/failed · duration · trigger.
+- **Dead-Letter Queue** — each failed item with its error and a **Replay** button.
+  Replay re-enqueues the payload verbatim and marks the row *replayed* (it stays
+  listed); the re-flowed event appears in Events — same idempotency key, no dup.
+- **Events** — the normalized spine with a total count.
+
+The dashboard talks to the API through Vite's dev proxy (`/api/*` → `:3000`), so
+there's no CORS to configure. It's a **separate package** (`dashboard/`) with its
+own deps; the backend is untouched. The two demo API keys are baked into the client
+(they're *demo* keys) rather than exposed by a cross-tenant endpoint — which would
+itself break the isolation the dashboard exists to demonstrate.
+
+> Prefer Bull Board for raw queue introspection? It can be mounted behind the
+> tenant auth as a drop-in; the custom panels above were fast enough not to need it.
+
+---
+
 ## Architecture (so far)
 
 ```
@@ -372,16 +411,17 @@ src/
   app.ts                 # Express app factory (webhook, /dlq, replay, backfill, reconcile, /connections)
   server.ts              # API entrypoint (queue producer)
   worker.ts              # worker entrypoint: ingest + nango-sync + reconcile (separate process)
-scripts/                 # *.ts, run via tsx (npm run verify | replay-demo | reconcile-demo | ...)
+scripts/                 # *.ts, run via tsx (npm run verify | seed | replay-demo | reconcile-demo | ...)
 test/                    # vitest suite (*.test.ts, runs against a local test DB)
+dashboard/               # M6: Vite + React + React Query dashboard (separate package, /api proxy → :3000)
 ```
 
 ### HTTP API
 
 Public: `GET /health`; `POST /webhooks/nango` (Nango-signature authenticated).
-Tenant-scoped (API key): `GET /events` · `GET /dlq` · `POST /dlq/:id/replay` ·
-`POST /connections/:id/backfill` · `POST /connections/:id/reconcile` ·
-`POST /connections`
+Tenant-scoped (API key): `GET /events` · `GET /connections` · `GET /sync-runs` ·
+`GET /dlq` · `POST /dlq/:id/replay` · `POST /connections/:id/backfill` ·
+`POST /connections/:id/reconcile` · `POST /connections`
 
 ## Testing
 
@@ -410,5 +450,7 @@ Two tiers:
   nango-sync worker (records API → per-record ingest), fixture-backed local mode
 - **M5 ✅** reconciliation poller — BullMQ repeatable sweep + `POST /connections/:id/reconcile`,
   durable per-model cursor in `sync_state` that advances only after a page lands
-- **M6** React dashboard + observability
+- **M6 ✅** React + React Query dashboard (Vite): tenant switcher (isolation),
+  sync control (reconcile/backfill), sync-runs, DLQ + replay, events — plus
+  `GET /connections`, `GET /sync-runs`, and a two-tenant seed (`npm run seed`)
 - **M7** README polish + negative isolation test + demo rehearsal

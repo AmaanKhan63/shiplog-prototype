@@ -3,7 +3,7 @@ import mongoose from 'mongoose'
 import { tenantAuth } from './middleware/tenantAuth.js'
 import { withTenant } from './repository/withTenant.js'
 import { config } from './config/env.js'
-import { Connection, DeadLetter } from './models/index.js'
+import { Connection, DeadLetter, SyncRun } from './models/index.js'
 import type { IEvent } from './models/Event.js'
 import { replayDeadLetter, backfillConnection } from './queue/replay.js'
 import { enqueueReconcileJob } from './queue/reconcileSweep.js'
@@ -103,6 +103,26 @@ export function buildApp({ ingestQueue, nangoSyncQueue, reconcileQueue, nangoWeb
         .sort({ occurredAt: -1 })
         .lean()
       res.json({ count: events.length, events })
+    } catch (err) {
+      next(err)
+    }
+  })
+
+  // List the tenant's connections (drives the dashboard Sync Control panel).
+  app.get('/connections', async (req: Request, res: Response, next: NextFunction) => {
+    try {
+      const connections = await Connection.find({ tenantId: req.tenantId }).sort({ createdAt: 1 }).limit(100).lean()
+      res.json({ count: connections.length, connections })
+    } catch (err) {
+      next(err)
+    }
+  })
+
+  // List the tenant's sync runs, newest first (drives the dashboard Sync Runs table).
+  app.get('/sync-runs', async (req: Request, res: Response, next: NextFunction) => {
+    try {
+      const runs = await SyncRun.find({ tenantId: req.tenantId }).sort({ createdAt: -1 }).limit(50).lean()
+      res.json({ count: runs.length, runs })
     } catch (err) {
       next(err)
     }
