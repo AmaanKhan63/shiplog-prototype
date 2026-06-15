@@ -69,6 +69,12 @@ describe('POST /dlq/:id/replay', () => {
     const res = await request(buildApp()).post(`/dlq/${dl._id}/replay`).set('Authorization', 'Bearer key-a')
     expect(res.status).toBe(503)
   })
+
+  it('returns 400 for a malformed id (not a 500)', async () => {
+    const res = await request(app).post('/dlq/not-an-object-id/replay').set('Authorization', 'Bearer key-a')
+    expect(res.status).toBe(400)
+    expect(queue.added).toHaveLength(0)
+  })
 })
 
 describe('POST /connections/:id/backfill', () => {
@@ -79,5 +85,11 @@ describe('POST /connections/:id/backfill', () => {
     expect(res.status).toBe(200)
     expect(res.body.enqueued).toBe(2)
     expect(queue.added).toHaveLength(2)
+  })
+
+  it('returns 400 for a malformed connection id (not a 500)', async () => {
+    const res = await request(app).post('/connections/not-an-object-id/backfill').set('Authorization', 'Bearer key-a')
+    expect(res.status).toBe(400)
+    expect(queue.added).toHaveLength(0)
   })
 })

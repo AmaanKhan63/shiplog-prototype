@@ -16,6 +16,7 @@
     "inject": "node scripts/inject-failure.js",
     "dlq": "node scripts/show-dlq.js",
     "replay-demo": "node scripts/replay-demo.js",
+    "reconcile-demo": "node scripts/reconcile-demo.js",
     "connect": "node scripts/connect.js",
     "simulate-webhook": "node scripts/simulate-nango-webhook.js",
     "test": "vitest run",

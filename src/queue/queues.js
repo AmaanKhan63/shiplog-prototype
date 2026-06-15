@@ -3,6 +3,7 @@ import { Queue } from 'bullmq'
 export const INGEST_QUEUE = 'ingest'
 export const DLQ = 'dlq'
 export const NANGO_SYNC_QUEUE = 'nango-sync'
+export const RECONCILE_QUEUE = 'nango-reconcile'
 
 /**
  * Default options for every ingest job. `attempts` + a `custom` backoff type are
@@ -31,4 +32,26 @@ export function createDlqQueue(connection) {
 // the records API and fans them out as per-record ingest jobs.
 export function createNangoSyncQueue(connection) {
   return new Queue(NANGO_SYNC_QUEUE, { connection, defaultJobOptions: ingestJobOptions })
+}
+
+/**
+ * Reconcile jobs use a deterministic per-(connection, model) jobId, so a manual
+ * trigger and a scheduled sweep tick collapse onto ONE in-flight job instead of
+ * racing the same cursor. That makes prompt terminal removal important: a
+ * retained completed/failed job keeps its jobId and would suppress the *next*
+ * trigger — so remove on complete and on fail to keep it re-triggerable. The
+ * durable cursor (sync_state) is the real record of progress, not the job.
+ */
+export const reconcileJobOptions = {
+  attempts: 5,
+  backoff: { type: 'custom' },
+  removeOnComplete: true,
+  removeOnFail: true,
+}
+
+// Reconciliation poller: holds the repeatable sweep + per-connection reconcile
+// jobs. Transient records-API outages retry; the durable cursor stays put until
+// a page lands.
+export function createReconcileQueue(connection) {
+  return new Queue(RECONCILE_QUEUE, { connection, defaultJobOptions: reconcileJobOptions })
 }

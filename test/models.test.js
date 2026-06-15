@@ -53,9 +53,10 @@ describe('Event indexes', () => {
 })
 
 describe('SyncState index', () => {
-  it('has a {connectionId} index', async () => {
-    const keys = keysOf(await SyncState.collection.indexes())
-    expect(keys).toContain('connectionId')
+  it('has a unique {tenantId, connectionId, model} cursor index', async () => {
+    const indexes = await SyncState.collection.indexes()
+    expect(keysOf(indexes)).toContain('tenantId,connectionId,model')
+    expect(indexes.find((i) => Object.keys(i.key).join(',') === 'tenantId,connectionId,model').unique).toBe(true)
   })
 })
 

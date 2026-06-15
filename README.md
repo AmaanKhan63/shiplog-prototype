@@ -189,6 +189,60 @@ curl -H "Authorization: Bearer demo-api-key" http://localhost:3000/events
 
 ---
 
+### Milestone 5 — reconciliation poller (the webhook safety net)
+
+Webhooks get dropped — Nango is down, your endpoint is redeploying, ngrok
+hiccups. The poller is the backstop: it independently **polls** Nango's records
+API on a durable cursor and re-delivers anything the webhook missed.
+
+```
+repeatable sweep (BullMQ job scheduler, every RECONCILE_EVERY_MS)
+        │  fan out: one reconcile job per active connection × model
+        ▼
+reconcile worker  ─ load cursor from sync_state ─▶ nango.listRecords({model, cursor})
+        │  land raw_records + enqueue ingest per record   (page by page)
+        │  ✅ checkpoint: persist last record's cursor  ── ONLY after the page lands
+        ▼
+ingest worker ─▶ normalize ─▶ idempotent upsert ─▶ events
+```
+
+**The cursor invariant.** The cursor advances **only after** a page's records
+are durably landed in `raw_records` (checkpoint-after-write, per page). If the
+records fetch or a landing throws, the cursor stays where the last fully-landed
+page put it, and BullMQ retries from there — never re-pulling all history, never
+skipping a record. *Advances on success, holds on failure.*
+
+A reconcile job uses a **deterministic jobId** (`reconcile:<connectionId>:<model>`)
+so a manual trigger and a scheduled tick collapse onto one in-flight job instead
+of racing the same cursor — the cursor stays single-writer.
+
+> **Layering (stated precisely):** a cursor that advanced means records are
+> durably in `raw_records` **and** an ingest job is enqueued — *not* that they're
+> confirmed in the `events` spine. A record whose ingest later dead-letters is
+> recovered via M3 replay/backfill. Reconcile is the **delivery** safety net;
+> the ingest retry/DLQ is the **processing** one.
+
+**Trigger it.** Scheduled automatically (the sweep, registered by the worker at
+boot), or manually per connection:
+
+```bash
+curl -X POST -H "Authorization: Bearer demo-api-key" \
+     http://localhost:3000/connections/<connectionId>/reconcile
+# body {"model":"GithubPullRequest"} reconciles one model; omit it for all of
+# the connection's models (Connection.models, default ["GithubIssue"])
+```
+
+**See both paths + the invariant** (fixture-backed; needs Mongo + Redis):
+
+```bash
+npm run reconcile-demo
+# Path 1  signed webhook        -> 2 events
+# Path 2  reconcile (API down)  -> retries w/ backoff, FAILS, cursor HELD at ∅
+# Path 3  reconcile (recovered) -> cursor ADVANCES to c-102, no duplicate events
+```
+
+---
+
 ## Architecture (so far)
 
 ```
@@ -298,21 +352,25 @@ src/
     deadLetter.js        # terminal-failure detection + dead_letter persistence
     ingestWorker.js      # Worker factory: backoffStrategy + failed -> DLQ
     nangoSyncWorker.js   # Worker factory: fetch records -> fan out ingest jobs
+    reconcileSweep.js    # sweep fan-out + deterministic per-(conn,model) reconcile job
+    reconcileWorker.js   # Worker factory: sweep/reconcile dispatch + sweep scheduler
     replay.js            # replayDeadLetter + backfillConnection
   nango/
     verify.js            # X-Nango-Hmac-Sha256 verification (timingSafeEqual)
     client.js            # @nangohq/node client (or fixture adapter)
-    syncProcessor.js     # listRecords -> land raw + enqueue per-record ingest
+    syncProcessor.js     # listRecords -> land raw + enqueue per-record ingest (webhook)
+    reconcileProcessor.js # poll on sync_state cursor; checkpoint-after-write per page
   fixtures/github.js     # static Nango-shaped GitHub records
-  app.js                 # Express app factory (webhook, /dlq, replay, backfill, /connections)
+  app.js                 # Express app factory (webhook, /dlq, replay, backfill, reconcile, /connections)
   server.js              # API entrypoint (queue producer)
-  worker.js              # worker entrypoint: ingest + nango-sync (separate process)
+  worker.js              # worker entrypoint: ingest + nango-sync + reconcile (separate process)
 scripts/
   seed-and-verify.js        # `npm run verify`        (M1 idempotency demo)
   enqueue-fixtures.js       # `npm run enqueue`
   inject-failure.js         # `npm run inject <transient|logical>`
   show-dlq.js               # `npm run dlq`
-  replay-demo.js            # `npm run replay-demo`   (M3 failure->replay->no-dup)
+  replay-demo.js            # `npm run replay-demo`     (M3 failure->replay->no-dup)
+  reconcile-demo.js         # `npm run reconcile-demo`  (M5 both paths + cursor invariant)
   connect.js                # `npm run connect <connectionId> [integrationId]`
   simulate-nango-webhook.js # `npm run simulate-webhook [model] [connectionId]`
 test/                    # vitest suite (runs against a local test DB)
@@ -322,7 +380,8 @@ test/                    # vitest suite (runs against a local test DB)
 
 Public: `GET /health`; `POST /webhooks/nango` (Nango-signature authenticated).
 Tenant-scoped (API key): `GET /events` · `GET /dlq` · `POST /dlq/:id/replay` ·
-`POST /connections/:id/backfill` · `POST /connections`
+`POST /connections/:id/backfill` · `POST /connections/:id/reconcile` ·
+`POST /connections`
 
 ## Testing
 
@@ -349,6 +408,7 @@ Two tiers:
   raw layer, the failure → replay → no-duplicate demo
 - **M4 ✅** real Nango GitHub integration — `POST /webhooks/nango` (HMAC verify),
   nango-sync worker (records API → per-record ingest), fixture-backed local mode
-- **M5** reconciliation poller (cursor advances on success only)
+- **M5 ✅** reconciliation poller — BullMQ repeatable sweep + `POST /connections/:id/reconcile`,
+  durable per-model cursor in `sync_state` that advances only after a page lands
 - **M6** React dashboard + observability
 - **M7** README polish + negative isolation test + demo rehearsal
