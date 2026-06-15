@@ -162,7 +162,9 @@ curl -H "Authorization: Bearer demo-api-key" http://localhost:3000/events
    This id must match exactly, or webhooks won't resolve to the tenant.
 3. **Secrets** — put `NANGO_SECRET_KEY` (Environment Settings) and
    `NANGO_WEBHOOK_SECRET` (Environment Settings → Webhooks → **Signing key**) in
-   `.env`. With a real `NANGO_SECRET_KEY` set, the worker calls the live records API.
+   `.env`, and make sure `NANGO_USE_FIXTURES` is **not** set. Restart the worker and
+   confirm its boot log reads `Nango=live` (not `Nango=fixtures`) — otherwise it
+   serves static fixtures and you'll see fake data that looks real.
 4. **Webhook URL** — expose your local API and point Nango at it:
    ```bash
    ngrok http 3000
