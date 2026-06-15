@@ -4,7 +4,10 @@ const TEST_URI = process.env.MONGODB_TEST_URI || 'mongodb://localhost:27017/ship
 
 export async function connectTestDB() {
   if (mongoose.connection.readyState === 0) {
-    await mongoose.connect(TEST_URI)
+    // autoIndex off: build indexes explicitly via syncIndexes() so the promise
+    // is awaited and can't reject in the background after a disconnect (which
+    // would crash the test worker).
+    await mongoose.connect(TEST_URI, { autoIndex: false })
   }
   return mongoose.connection
 }

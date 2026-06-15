@@ -5,10 +5,11 @@ import { Tenant, Connection, SyncState, RawRecord, Event, SyncRun, DeadLetter } 
 
 beforeAll(async () => {
   await connectTestDB()
-  // Ensure indexes are built before asserting on them / exercising uniqueness.
+  // Build indexes explicitly (autoIndex is off) before asserting on them /
+  // exercising uniqueness.
   await Promise.all([
-    Tenant.init(), Connection.init(), SyncState.init(),
-    RawRecord.init(), Event.init(), SyncRun.init(), DeadLetter.init(),
+    Tenant.syncIndexes(), Connection.syncIndexes(), SyncState.syncIndexes(),
+    RawRecord.syncIndexes(), Event.syncIndexes(), SyncRun.syncIndexes(), DeadLetter.syncIndexes(),
   ])
 })
 afterAll(dropAndClose)

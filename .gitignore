@@ -7,3 +7,6 @@ coverage/
 .DS_Store
 dist/
 .vitest/
+
+# Internal build/interview spec — kept local, not part of the deliverable repo
+shiplog-sync-prototype-spec.md

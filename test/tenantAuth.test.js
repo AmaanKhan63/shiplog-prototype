@@ -10,8 +10,8 @@ let tenantB
 
 beforeAll(async () => {
   await connectTestDB()
-  await Event.init()
-  await Tenant.init()
+  await Event.syncIndexes()
+  await Tenant.syncIndexes()
   app = buildApp()
 })
 afterAll(dropAndClose)
