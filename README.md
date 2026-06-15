@@ -11,9 +11,44 @@ observability.
 > Direction is **source → store only** (GitHub into Shiplog). No write-back, no
 > conflict resolution.
 
-This repo is built in milestones. **Milestones 0–6 are complete** (scaffold +
-idempotent event spine + BullMQ retry/backoff + DLQ + replay/backfill + real Nango
-webhook ingestion + reconciliation poller + a React dashboard). See [Roadmap](#roadmap).
+This repo is built in milestones. **All seven milestones (0–7) are complete** —
+scaffold, idempotent event spine, BullMQ retry/backoff + DLQ, replay/backfill, real
+Nango webhook ingestion, the reconciliation poller, a React dashboard, and a negative
+multi-tenant isolation test. See [Roadmap](#roadmap).
+
+---
+
+## Why this shape
+
+**Why build on Nango, not rebuild it.** Nango already solves the hard, boring parts of
+integration — OAuth, the GitHub connection, the base sync, per-connection checkpoints,
+and webhooks — reliably and across providers. Re-implementing that would re-solve a
+solved problem. The engineering value is the layer Nango *doesn't* give you: your own
+normalized, deduped, tenant-scoped event spine; idempotent writes into your store; your
+dead-letter queue and replay for your *processing* failures; and application-level
+tenant isolation in your database. So this prototype **drives Nango** for connect/extract
+and builds that layer on top.
+
+**Why one-directional (source → store, no write-back).** Data flows one way: GitHub
+into the store, never back out. That matches the product shape — engineering output is
+ingested to power downstream consumers — and it *removes* scope: with no write-back
+there is no conflict resolution, no two-way merge, no echo-suppression. What's left are
+the problems that actually matter here — correctness, dedup, resilience, and isolation.
+
+**Why MERN — and how each piece maps to a production stack.** Built in MERN so every
+resilience decision is hand-rolled and inspectable rather than hidden behind a managed
+platform, and each component is a deliberate 1:1 analog of a typical Next.js / Postgres
+/ Inngest stack, so the patterns port directly:
+
+| This prototype (MERN) | Production analog | Why the pattern ports 1:1 |
+|---|---|---|
+| BullMQ + Redis (Upstash-compatible) | Inngest durable jobs | Retry/backoff, DLQ, and replay are the same durable-job patterns. *Nuance worth naming:* BullMQ retries **whole jobs**; Inngest checkpoints **steps** within a workflow. |
+| Mongo + `tenantId` + the `withTenant` wrapper | Postgres/Drizzle + row-level security | App-level RLS ↔ engine-level RLS — the same "every query must carry the tenant filter" discipline (Mongo has no engine RLS, so the wrapper *is* the backstop). |
+| Express `POST /webhooks/nango` (raw body + HMAC verify) | Next.js route handler / Server Action | The same signature-verified webhook receiver: verify, respond 2xx fast, enqueue — never process inline. |
+| `raw_records` → `events` collections | raw → normalized tables | The same raw-then-normalize layering (à la Airbyte/Fivetran); raw is the immutable replay/backfill source. |
+| Zod event contract (`z.infer` types) | Zod (the library Nango itself uses) | One typed schema as the single source of truth for runtime validation *and* static types. |
+| BullMQ repeatable sweep | a scheduled durable job | The reconciliation cadence is a durable, retriable job — not a fire-and-forget `node-cron` tick. |
+| reconciliation poller behind the webhook | the safety net behind any webhook source | Webhooks are "unreliable or incomplete" (Nango's own docs); the cursor-based poll re-delivers what a dropped webhook missed. |
 
 ---
 
@@ -302,12 +337,13 @@ Nango-shaped records ─▶ raw_records ─▶ ingest queue (BullMQ) ─▶ work
                                        (re-enqueue verbatim → same key → no dup)
 ```
 
-### Data model (MongoDB collections, spec §D)
+### Data model (MongoDB collections)
 
 `tenants` · `connections` · `sync_state` · `raw_records` · `events` · `sync_runs` ·
 `dead_letter`. Indexes: **unique** `{idempotencyKey}` on `events`;
-`{tenantId, externalId}` and `{tenantId, occurredAt}` on `events`; `{connectionId}`
-on `sync_state`.
+`{tenantId, externalId}` and `{tenantId, occurredAt}` on `events`; and a **unique**
+`{tenantId, connectionId, model}` on `sync_state` (one cursor row per
+tenant × connection × model — the M5 single-writer cursor).
 
 ### Key design decisions
 
@@ -337,11 +373,16 @@ token). A new version whose content is identical (e.g. a spurious `updatedAt` bu
 is suppressed as `unchanged`; only genuinely changed content counts as `updated` —
 so dashboard counts reflect real change (à la Fivetran's `_fivetran_id`).
 
-**Tenant isolation is application-enforced.** Every document carries `tenantId`;
-`tenantId` is part of the idempotency key; and a `withTenant(tenantId)` repository
-wrapper injects the tenant filter into every query — the app-level analog of
-Postgres row-level security (Mongo has none at the engine level). The full wrapper +
-a negative isolation test land in Milestone 7.
+**Tenant isolation is application-enforced.** Every document carries `tenantId`, and
+`tenantId` is part of the idempotency key. The consumption path — `GET /events` — reads
+through the `withTenant(tenantId)` repository wrapper, which injects the tenant filter
+into every query it issues: the app-level analog of Postgres row-level security (Mongo
+has none at the engine level). The other tenant-scoped endpoints (`/connections`,
+`/sync-runs`, `/dlq`) apply the same `tenantId` filter directly in their handlers. A
+**negative isolation test** (`test/isolation.test.ts`) pins the wrapper: it proves
+Tenant B cannot read Tenant A's events, and **fails if the `tenantId` filter is ever
+dropped from `withTenant`**. (Folding all collections under the wrapper is listed under
+Limitations, below.)
 
 **Durable jobs with classified retries (Milestone 2).** Ingestion runs through a
 BullMQ `ingest` queue processed by a **separate worker process**. An error
@@ -362,10 +403,44 @@ Retries/replays are safe because the processor reuses the idempotent `ingestEven
 Secrets are never placed in job payloads (BullMQ stores `data` in cleartext) — jobs
 carry only IDs and the public record.
 
-**MERN as a deliberate 1:1 analog of Shiplog's stack.** Mongo + `tenantId` + repo
-guard ↔ Postgres/Drizzle + RLS; Express routes ↔ Next.js route handlers; BullMQ +
-Redis ↔ Inngest durable jobs (BullMQ retries whole jobs; Inngest checkpoints steps —
-a distinction worth naming).
+**MERN as a deliberate 1:1 analog of a production stack.** Each choice maps directly to
+a Next.js / Postgres / Inngest stack — see the [mapping table](#why-this-shape) at the
+top (including the BullMQ-retries-whole-jobs vs. Inngest-checkpoints-steps nuance).
+
+---
+
+## Limitations & what I'd add for real scale
+
+This is a prototype that demonstrates the patterns at small scale — not production
+infrastructure. What I'd add next, roughly in priority order:
+
+- **Consolidate every collection under the repository wrapper.** Today only the `events`
+  consumption path goes through `withTenant`; the other tenant-scoped endpoints apply the
+  `tenantId` filter inline in their handlers. A single wrapper covering all collections
+  (with the negative test extended per collection) would make the mandatory-filter
+  guarantee structural rather than per-handler.
+- **True exactly-once via a transactional outbox.** At-least-once + an idempotent
+  consumer is "effectively once" for these writes; a transactional outbox would close the
+  gap for external side effects.
+- **Observability export (OpenTelemetry).** `sync_runs` + structured logs cover run
+  history and a DLQ-rate signal; a real deployment wants traces/metrics exported to a
+  collector, with the DLQ-rate alert wired to paging ("alert on the rate, not presence").
+- **Schema-drift handling.** Today a record whose shape the normalizer doesn't expect
+  fails Zod validation and dead-letters (recoverable via replay). At scale you'd want
+  drift detection and versioned mappers rather than dead-letter-and-fix.
+- **Per-tenant rate-limit budgets** so one tenant's large backfill can't exhaust shared
+  Nango/Redis capacity (per-tenant BullMQ job keys are the starting point).
+- **More sources into the same spine.** Adding Jira or Linear is a new Nango integration
+  plus a mapper into the existing `events` schema — not a rewrite.
+
+A few honest caveats:
+
+- **BullMQ ≠ Inngest exactly.** Inngest checkpoints *steps* within a workflow; BullMQ
+  retries *whole jobs*. The patterns map, but the distinction is real.
+- **Mongo has no engine-level row security.** Isolation here is application-enforced; on
+  Postgres you'd use RLS as the engine-level backstop.
+- **The Nango webhook signature** is implemented to Nango's documented HMAC scheme and is
+  unit-tested, but has not been validated against a live webhook (see Milestone 4).
 
 ---
 
@@ -378,7 +453,7 @@ is `strict` + `isolatedModules`, type-check with `npm run typecheck`.
 src/
   config/env.ts          # env config (dotenv)
   db/connect.ts          # mongoose connect/disconnect
-  models/                # 7 collections from spec §D, with indexes + document interfaces
+  models/                # the 7 collections, with indexes + document interfaces
   types/express.d.ts     # augments Express Request with tenant / tenantId
   middleware/tenantAuth.ts   # API key -> tenantId
   repository/withTenant.ts   # tenant-scoped query wrapper (app-level RLS)
@@ -431,7 +506,9 @@ Two tiers:
   `mongodb://localhost:27017/shiplog-sync-test` (dropped per run; the demo DB is
   never touched). Deterministic and Redis-free, so it runs anywhere. The queue's
   logic — error classification, backoff, the processor, terminal-failure/DLQ
-  detection — is fully covered here.
+  detection — is fully covered here. The **negative tenant-isolation test**
+  (`test/isolation.test.ts`) lives here too: it proves Tenant B cannot read Tenant A's
+  events and fails if the `tenantId` filter is dropped from the `withTenant` wrapper.
 - **`npm run test:integration`** — the live BullMQ retry→DLQ end-to-end test.
   Requires a reachable `REDIS_URL` (it self-skips if none is found). Kept separate
   because it depends on external infrastructure; on a rare worker-teardown exit
@@ -453,4 +530,6 @@ Two tiers:
 - **M6 ✅** React + React Query dashboard (Vite): tenant switcher (isolation),
   sync control (reconcile/backfill), sync-runs, DLQ + replay, events — plus
   `GET /connections`, `GET /sync-runs`, and a two-tenant seed (`npm run seed`)
-- **M7** README polish + negative isolation test + demo rehearsal
+- **M7 ✅** README (design rationale, the stack-mapping table, limitations), the
+  negative multi-tenant isolation test (`test/isolation.test.ts`), and a rehearsal
+  checklist ([`DEMO.md`](DEMO.md))
