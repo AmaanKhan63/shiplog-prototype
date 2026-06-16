@@ -61,29 +61,18 @@ Upstash `rediss://` URL. No Docker required.
 ```bash
 npm install
 cp .env.example .env        # MONGODB_URI, REDIS_URL (a local .env is already present)
-npm run verify              # the Milestone 1 demo (below)
 npm test                    # full test suite (queue integration tests skip if Redis is down)
 npm run typecheck           # tsc --noEmit (TypeScript; the app itself runs via tsx, no build step)
 ```
 
-### The Milestone 1 demo — idempotency no-op
+### Milestone 1 — the idempotent event spine
 
-```bash
-npm run verify
-```
-
-Ingests the static Nango-shaped GitHub fixtures **twice** and prints the run counts:
-
-```
-Run 1 (first ingest):   added=6  updated=0  deleted=0  failed=0  unchanged=0
-Run 2 (re-ingest):      added=0  updated=0  deleted=0  failed=0  unchanged=6
-
-✓ Idempotency no-op verified: re-ingesting the same data added 0 and updated 0.
-```
-
-The second run is a no-op: the unique idempotency key makes re-running a sync (or,
-later, replaying a DLQ item) safe. The script resets the demo tenant's `events` and
-`sync_runs` first, so `Run 1 → added:6` is reproducible on every invocation.
+Idempotency is the foundation: `idempotencyKey = sha256(tenantId | source |
+externalId | version)` with a unique index, so re-ingesting the same source version
+is a guaranteed no-op (added 0, updated 0) — what makes re-running a sync, retrying
+a job, or replaying a DLQ item safe. The property is covered by the test suite
+(`test/ingest.test.ts`) and demonstrated end to end by the Milestone 3
+**failure → replay → no-duplicate** demo below (`npm run replay-demo`).
 
 ### The Milestone 2 demo — failure → retry/backoff → DLQ
 
@@ -95,7 +84,6 @@ process**. Two terminals:
 npm run worker
 
 # terminal 2 — drive it
-npm run enqueue            # the 6 fixtures flow through the queue into events
 npm run inject transient   # 5xx-style error → retries with backoff → DLQ
 npm run inject logical     # bad-payload error → straight to DLQ, no retry
 npm run dlq                # inspect the dead_letter records
@@ -265,8 +253,8 @@ boot), or manually per connection:
 ```bash
 curl -X POST -H "Authorization: Bearer demo-api-key" \
      http://localhost:3000/connections/<connectionId>/reconcile
-# body {"model":"GithubPullRequest"} reconciles one model; omit it for all of
-# the connection's models (Connection.models, default ["GithubIssue"])
+# body {"model":"Commit"} reconciles one model; omit it for all of
+# the connection's models (Connection.models, default ["Commit"])
 ```
 
 **See both paths + the invariant** (fixture-backed; needs Mongo + Redis):
@@ -287,19 +275,21 @@ visible and operable from one page — and proves multi-tenant isolation by lett
 you switch tenants and watch the data change with nothing leaking.
 
 ```bash
-npm run seed                                 # two isolated demo tenants, with data
+npm run setup-tenants                        # Acme + Globex (two keys, one Nango connection)
 npm start                                    # terminal 1 — the API (:3000)
 npm run worker                               # terminal 2 — the worker (jobs actually run)
 cd dashboard && npm install && npm run dev   # terminal 3 — the dashboard (:5173)
-# open http://localhost:5173
+# open http://localhost:5173, switch tenants, and hit Reconcile to pull the real
+# sync into each tenant (events are stamped per-tenant; nothing leaks)
 ```
 
 One page, five panels — all scoped to the selected tenant's API key:
 
-- **Tenant switcher** — flips the API key every panel uses; switching from
-  *Acme Storefront* (5 events, a DLQ item) to *Globex Industries* (3 events, clean)
-  shows isolation at a glance. Every React Query key is namespaced by the active
-  key, so one tenant's rows can never bleed into another's view.
+- **Tenant switcher** — flips the API key every panel uses; switching between
+  *Acme* and *Globex* (both reconciled from the same Nango connection) shows the
+  same source data partitioned per tenant, with nothing leaking. Every React Query
+  key is namespaced by the active key, so one tenant's rows can never bleed into
+  another's view.
 - **Sync Control** — per connection, **Reconcile** (poll Nango on the durable
   cursor) and **Backfill** (reprocess `raw_records`) buttons.
 - **Sync Runs** — status · added/updated/deleted/failed · duration · trigger.
@@ -321,68 +311,37 @@ itself break the isolation the dashboard exists to demonstrate.
 
 ## Architecture (so far)
 
-The whole system on one page — two delivery paths (push webhook + poll reconcile)
-converging on a single idempotent ingest queue, then the deduped event spine,
-with the DLQ/replay and raw/backfill loops:
+High-level flow — **follow the numbers, 1 (top) → 8**. Two delivery paths (webhook +
+reconcile poller) converge on one idempotent **ingest queue**; the worker dedupes into
+the **events spine**; a record that fails every retry **dead-letters** and can be
+**replayed** without duplicating. Collection-level detail (`raw_records`, the
+`sync_state` cursor, the per-path queues) is in the ASCII + prose below.
 
 ```mermaid
 flowchart TB
-  GH["GitHub"]
-  NG["Nango<br/>runs syncs, caches records"]
-  GH -->|"OAuth + scheduled syncs"| NG
+  GH(["1. GitHub<br/>source of truth"]):::start
+  NG["2. Nango<br/>runs syncs, caches records"]:::ext
+  WH["3a. Webhook<br/>push, real-time"]:::api
+  POLL["3b. Reconcile poller<br/>cursor safety net"]:::worker
+  IQ["4. Ingest queue<br/>BullMQ: retry + backoff"]:::queue
+  IW["5. Ingest worker<br/>normalize + Zod + idempotent upsert"]:::worker
+  EVT[("6. Events spine<br/>deduped, tenant-scoped")]:::spine
+  API["7. Tenant API<br/>withTenant isolation"]:::api
+  DASH["8. React dashboard"]:::ui
+  DLQ[("dead_letter")]:::store
 
-  subgraph API["API process (request-scoped)"]
-    WH["POST /webhooks/nango<br/>verify HMAC, respond 202 fast"]
-    TRIG["POST .../reconcile<br/>POST /dlq/id/replay<br/>POST .../backfill"]
-    READ["GET /events, /dlq, /sync-runs<br/>tenantAuth + withTenant"]
-  end
-
-  subgraph REDIS["Redis + BullMQ queues"]
-    SQ["nango-sync"]
-    RQ["nango-reconcile<br/>+ repeatable sweep"]
-    IQ["ingest"]
-  end
-
-  subgraph WORKER["Worker process (always-on)"]
-    SW["sync worker"]
-    RW["reconcile worker<br/>+ sweep"]
-    IW["ingest worker<br/>normalize + Zod + idempotent upsert"]
-  end
-
-  subgraph MONGO["MongoDB (every row carries tenantId)"]
-    RR[("raw_records")]
-    SS[("sync_state<br/>cursor")]
-    EVT[("events spine")]
-    DLQ[("dead_letter")]
-  end
-
-  NG -->|"sync webhook = notification only"| WH
-  WH -->|"enqueue"| SQ
-  TRIG -->|"enqueue"| RQ
-  TRIG -->|"replay / backfill"| IQ
-
-  SQ --> SW
-  RQ --> RW
+  GH --> NG
+  NG --> WH
+  NG --> POLL
+  WH --> IQ
+  POLL --> IQ
   IQ --> IW
+  IW --> EVT
+  EVT --> API
+  API --> DASH
 
-  SW -->|"listRecords(modifiedAfter)"| NG
-  RW -->|"listRecords(cursor)"| NG
-  RW <-->|"checkpoint cursor after page lands"| SS
-  SW -->|"land"| RR
-  RW -->|"land"| RR
-  SW -->|"fan out 1 job/record"| IQ
-  RW -->|"fan out 1 job/record"| IQ
-
-  IW -->|"idempotent upsert"| EVT
-  IW -.->|"transient: retry w/ backoff"| IQ
-  IW -->|"terminal failure"| DLQ
-
-  RR -.->|"backfill"| IQ
-  DLQ -.->|"replay verbatim, same key"| IQ
-
-  EVT --> READ
-  DLQ --> READ
-  READ --> DASH["React dashboard<br/>tenant switcher"]
+  IW -.->|"fails after retries"| DLQ
+  DLQ -.->|"replay: same key, no duplicate"| IQ
 ```
 
 The same ingest/DLQ/replay core, drawn closer in:
@@ -552,7 +511,7 @@ src/
   app.ts                 # Express app factory (webhook, /dlq, replay, backfill, reconcile, /connections)
   server.ts              # API entrypoint (queue producer)
   worker.ts              # worker entrypoint: ingest + nango-sync + reconcile (separate process)
-scripts/                 # *.ts, run via tsx (npm run verify | seed | replay-demo | reconcile-demo | ...)
+scripts/                 # *.ts, run via tsx (npm run setup-tenants | connect | replay-demo | reconcile-demo | inject | dlq)
 test/                    # vitest suite (*.test.ts, runs against a local test DB)
 dashboard/               # M6: Vite + React + React Query dashboard (separate package, /api proxy → :3000)
 ```
@@ -595,7 +554,7 @@ Two tiers:
   durable per-model cursor in `sync_state` that advances only after a page lands
 - **M6 ✅** React + React Query dashboard (Vite): tenant switcher (isolation),
   sync control (reconcile/backfill), sync-runs, DLQ + replay, events — plus
-  `GET /connections`, `GET /sync-runs`, and a two-tenant seed (`npm run seed`)
+  `GET /connections`, `GET /sync-runs`, and a two-tenant setup (`npm run setup-tenants`)
 - **M7 ✅** README (design rationale, the stack-mapping table, limitations), the
   negative multi-tenant isolation test (`test/isolation.test.ts`), and a rehearsal
   checklist ([`DEMO.md`](DEMO.md))
