@@ -12,6 +12,11 @@ export interface IngestJobData {
   record?: NangoRecord
   poison?: FailMode
   __poison?: FailMode
+  // Self-healing demo fault (recovery/idempotency demos): every attempt fails
+  // transiently until THIS record has dead-lettered, then the "outage" is
+  // considered resolved so a verbatim /dlq/:id/replay falls through and ingests.
+  // Present only on records injected by `npm run inject recovery|duplicate`.
+  demoFault?: { id: string }
 }
 
 export interface NangoSyncJobData {

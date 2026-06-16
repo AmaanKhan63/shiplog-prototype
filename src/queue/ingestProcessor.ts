@@ -1,6 +1,7 @@
 import { UnrecoverableError } from 'bullmq'
 import { normalizeGithubRecord } from '../normalize/github.js'
 import { ingestEvent } from '../events/ingest.js'
+import { DeadLetter } from '../models/index.js'
 import { classifyError, TransientError, LogicalError } from './errors.js'
 import type { FailMode, IngestJobData, JobView } from './types.js'
 
@@ -19,6 +20,9 @@ export interface IngestProcessorOptions {
  *     verbatim replay then succeeds.
  *   - `job.data.poison` / `record.__poison` — a fault baked into the payload (M2
  *     manual injection); such an item will re-fail on replay, by design.
+ *   - `job.data.demoFault` — a SELF-HEALING fault (recovery/idempotency demos):
+ *     fails transiently every attempt until this record has dead-lettered, then
+ *     recovers, so a verbatim replay succeeds. See the demoFault block below.
  * Values: 'transient' | 'logical' | 'ratelimit'.
  *
  * Error policy via the classifier:
@@ -27,9 +31,22 @@ export interface IngestProcessorOptions {
  *   - transient→ rethrown unchanged so BullMQ retries it with backoff
  */
 export async function ingestProcessor(job: JobView<IngestJobData>, { failMode }: IngestProcessorOptions = {}) {
-  const { tenantId, record, poison } = job.data
+  const { tenantId, record, poison, demoFault } = job.data
 
   try {
+    // Self-healing transient fault for the recovery/duplicate demos. While this
+    // record has NOT yet dead-lettered, every attempt fails transiently (so it
+    // retries with backoff and lands in the DLQ); once a dead_letter doc exists
+    // for it the "outage" is resolved, and a verbatim /dlq/:id/replay falls
+    // through to ingest. Gated on demoFault, so real records never read here —
+    // and it auto-tracks `attempts` (no magic retry count to keep in sync).
+    if (demoFault?.id) {
+      const alreadyDeadLettered = await DeadLetter.exists({ tenantId, 'payload.demoFault.id': demoFault.id })
+      if (!alreadyDeadLettered) {
+        throw new TransientError('injected transient outage (demo) — recovers after dead-lettering', { statusCode: 503 })
+      }
+    }
+
     const injected = failMode ?? poison ?? record?.__poison
     if (injected === 'transient') throw new TransientError('injected transient failure', { statusCode: 503 })
     if (injected === 'logical') throw new LogicalError('injected logical failure')

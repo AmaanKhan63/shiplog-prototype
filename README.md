@@ -86,8 +86,19 @@ npm run worker
 # terminal 2 — drive it
 npm run inject transient   # 5xx-style error → retries with backoff → DLQ
 npm run inject logical     # bad-payload error → straight to DLQ, no retry
+npm run inject recovery    # NEW record fails → DLQ; replay lands it 1st time → events +1
+npm run inject duplicate   # key already exists; replay → same row, events unchanged
 npm run dlq                # inspect the dead_letter records
 ```
+
+`recovery` and `duplicate` use a **self-healing** fault — the record fails every
+attempt until it dead-letters, then recovers, so a verbatim `POST /dlq/:id/replay`
+against the **real worker** succeeds (no self-contained script, nothing wiped). The
+script prints the exact replay curl and the expected before/after event counts. They
+run on the `acme-api-key` tenant (run `npm run setup-tenants <connId> github` first),
+so the failure→replay story and the isolation demo share one tenant.
+`transient`/`logical` keep the original payload-baked poison (on the auto-created
+demo tenant), which re-fails on replay.
 
 The worker log shows the retry path for a transient failure (exponential backoff
 **with jitter**), then the dead-letter after attempts are exhausted:
@@ -282,7 +293,7 @@ visible and operable from one page — and proves multi-tenant isolation by lett
 you switch tenants and watch the data change with nothing leaking.
 
 ```bash
-npm run setup-tenants                        # Acme + Globex (two keys, one Nango connection)
+npm run setup-tenants <nangoConnectionId> github   # Acme + Globex (two keys, one Nango connection)
 npm start                                    # terminal 1 — the API (:3000)
 npm run worker                               # terminal 2 — the worker (jobs actually run)
 cd dashboard && npm install && npm run dev   # terminal 3 — the dashboard (:5173)
@@ -518,7 +529,7 @@ src/
   app.ts                 # Express app factory (webhook, /dlq, replay, backfill, reconcile, /connections)
   server.ts              # API entrypoint (queue producer)
   worker.ts              # worker entrypoint: ingest + nango-sync + reconcile (separate process)
-scripts/                 # *.ts, run via tsx (npm run setup-tenants | connect | replay-demo | reconcile-demo | inject | dlq)
+scripts/                 # *.ts, run via tsx (npm run setup-tenants | connect | replay-demo | reconcile-demo | inject | dlq | isolation-check | clean-demo)
 test/                    # vitest suite (*.test.ts, runs against a local test DB)
 dashboard/               # M6: Vite + React + React Query dashboard (separate package, /api proxy → :3000)
 ```
