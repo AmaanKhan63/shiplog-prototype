@@ -24,7 +24,7 @@ const INTEGRATION_ID = process.argv[3];
 
 const TENANTS = [
   { name: 'Acme', apiKey: 'acme-api-key' },
-  { name: 'Globex', apiKey: 'globex-api-key' },
+  // { name: 'Globex', apiKey: 'globex-api-key' },
 ]
 
 async function upsertTenantConnection(name: string, apiKey: string) {
