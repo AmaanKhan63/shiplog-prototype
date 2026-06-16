@@ -20,6 +20,7 @@
     "isolation-check": "tsx scripts/isolation-check.ts",
     "clean-demo": "tsx scripts/clean-demo.ts",
     "trigger-sync": "tsx scripts/trigger-sync.ts",
+    "replay": "tsx scripts/replay.ts",
     "simulate-webhook": "tsx scripts/simulate-nango-webhook.ts",
     "typecheck": "tsc --noEmit",
     "test": "vitest run",

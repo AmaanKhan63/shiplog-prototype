@@ -147,14 +147,15 @@ async function main() {
   const afterDlq = await countEvents()
   console.log(`\nDead-lettered:  dlqId=${dl._id}   attemptsMade=${dl.attemptsMade}`)
   console.log(`events now = ${afterDlq}   (parked in the DLQ — the failed attempts wrote nothing)`)
-  console.log('\nReplay through the REAL endpoint (the outage is now "resolved", so it lands):')
-  console.log(`  curl -X POST http://localhost:${config.port}/dlq/${dl._id}/replay -H "Authorization: Bearer ${apiKey}"`)
+  console.log('\nReplay it (the outage is now "resolved", so it lands) — through the real endpoint, no curl:')
+  console.log('  npm run replay              # replays this dead-letter (the most recent for Acme)')
+  console.log(`  # or target it explicitly:  npm run replay ${dl._id}`)
   console.log(
     isDuplicate
       ? `Expected after replay: events stays ${afterDlq}  (idempotent no-op — SAME row, same key, no duplicate).`
       : `Expected after replay: events ${afterDlq} -> ${afterDlq + 1}  (+1 — recovered and ingested for the first time).`
   )
-  console.log(`Verify:  curl http://localhost:${config.port}/events -H "Authorization: Bearer ${apiKey}"`)
+  console.log(`Verify (mongosh):  db.events.countDocuments({ tenantId: ObjectId("${tenantId}") })`)
 
   await queue.close()
   await disconnectDB()
