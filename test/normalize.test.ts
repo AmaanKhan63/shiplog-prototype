@@ -23,6 +23,18 @@ const commit = {
   commit: { message: 'Fix login\n\nLonger body', author: { name: 'Hubot', date: '2024-01-03T09:00:00Z' } },
 }
 
+// The same commit as live Nango hands it over: flat fields, model name "Commit".
+const liveCommit = {
+  id: 'nango-rec-4',
+  _nango_metadata: { model: 'Commit' },
+  sha: 'def789abc012',
+  html_url: 'https://github.com/acme/app/commit/def789abc012',
+  author_login: 'mona',
+  author_name: 'Mona Lisa',
+  message: 'Ship dark mode\n\nLonger body',
+  author_date: '2024-02-02T12:00:00Z',
+}
+
 const pr = {
   id: 'nango-rec-3',
   _nango_metadata: { model: 'GithubPullRequest' },
@@ -61,6 +73,19 @@ describe('normalizeGithubRecord', () => {
       version: 'abc123def456',
     })
     expect(e.occurredAt).toEqual(new Date('2024-01-03T09:00:00Z'))
+  })
+
+  it('maps a live Nango Commit with flat fields (author_login / message / author_date)', () => {
+    const e = normalizeGithubRecord(liveCommit)
+    expect(e).toMatchObject({
+      source: 'github',
+      type: 'commit',
+      externalId: 'commit:def789abc012',
+      actor: 'mona',
+      title: 'Ship dark mode',
+      version: 'def789abc012',
+    })
+    expect(e.occurredAt).toEqual(new Date('2024-02-02T12:00:00Z'))
   })
 
   it('maps a GithubPullRequest', () => {

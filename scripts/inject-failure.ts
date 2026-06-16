@@ -28,9 +28,9 @@ async function main() {
   queue.on('error', (err) => console.error(`[queue] error: ${err?.message}`))
   const { ctx } = await ensureDemoContext('reconcile')
 
-  // Reuse a real fixture so the payload is realistic; the poison flag forces the
-  // chosen failure path inside the processor.
-  const record = { ...githubFixtures[0] }
+  // Reuse a real GitHub *commit* fixture so the payload is realistic; the poison
+  // flag forces the chosen failure path inside the processor.
+  const record = { ...githubFixtures.find((r) => r._nango_metadata.model === 'GithubCommit')! }
   const job = await queue.add('ingest', { ...ctx, record, poison: mode as FailMode })
 
   console.log(`Injected a ${mode} failure as job ${job.id}.`)

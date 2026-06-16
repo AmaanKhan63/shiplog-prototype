@@ -45,16 +45,18 @@ export function normalizeGithubRecord(record: NangoRecord): NormalizedEventInput
         version: r.updated_at,
       }
 
-    case 'GithubCommit':
-    case 'Commit':
+    case 'GithubCommit': // fixtures use this name
+    case 'Commit':       // live Nango model name
       return {
         source: 'github',
         type: 'commit',
         externalId: `commit:${r.sha}`,
-        actor: r.author_login ?? r.author_name ?? 'unknown',
-        title: (r.message ?? '').split('\n')[0],
+        // Tolerate both shapes: live Nango's flat fields and the GitHub-API-shaped
+        // fixtures (nested `author` / `commit.author`).
+        actor: r.author_login ?? r.author?.login ?? r.author_name ?? 'unknown',
+        title: (r.message ?? r.commit?.message ?? '').split('\n')[0],
         url: r.html_url,
-        occurredAt: new Date(r.author_date),
+        occurredAt: new Date(r.author_date ?? r.commit?.author?.date),
         version: r.sha,
       }
 

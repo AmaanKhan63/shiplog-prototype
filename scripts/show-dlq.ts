@@ -15,9 +15,12 @@ async function main() {
 
   console.log(`\ndead_letter: ${total} record(s)\n`)
   for (const d of docs) {
-    const model = d.payload?.record?._nango_metadata?.model ?? 'record'
+    const rec = d.payload?.record as Record<string, any> | undefined
+    const model = rec?._nango_metadata?.model ?? 'record'
+    // Record identity: sha for commits, #number for issues/PRs, else the Nango id.
+    const ident = rec?.sha ?? (rec?.number != null ? `#${rec.number}` : rec?.id) ?? ''
     const poison = d.payload?.poison ? ` poison=${d.payload.poison}` : ''
-    console.log(`• ${new Date(d.failedAt!).toISOString()}  attempts=${d.attemptsMade}  ${model}${poison}`)
+    console.log(`• ${new Date(d.failedAt!).toISOString()}  attempts=${d.attemptsMade}  ${model}${ident ? ' ' + ident : ''}${poison}`)
     console.log(`    error: ${d.errorMessage}`)
     console.log(`    tenant=${d.tenantId}  syncRun=${d.syncRunId}  dlqId=${d._id}`)
   }
