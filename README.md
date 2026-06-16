@@ -321,6 +321,72 @@ itself break the isolation the dashboard exists to demonstrate.
 
 ## Architecture (so far)
 
+The whole system on one page — two delivery paths (push webhook + poll reconcile)
+converging on a single idempotent ingest queue, then the deduped event spine,
+with the DLQ/replay and raw/backfill loops:
+
+```mermaid
+flowchart TB
+  GH["GitHub"]
+  NG["Nango<br/>runs syncs, caches records"]
+  GH -->|"OAuth + scheduled syncs"| NG
+
+  subgraph API["API process (request-scoped)"]
+    WH["POST /webhooks/nango<br/>verify HMAC, respond 202 fast"]
+    TRIG["POST .../reconcile<br/>POST /dlq/id/replay<br/>POST .../backfill"]
+    READ["GET /events, /dlq, /sync-runs<br/>tenantAuth + withTenant"]
+  end
+
+  subgraph REDIS["Redis + BullMQ queues"]
+    SQ["nango-sync"]
+    RQ["nango-reconcile<br/>+ repeatable sweep"]
+    IQ["ingest"]
+  end
+
+  subgraph WORKER["Worker process (always-on)"]
+    SW["sync worker"]
+    RW["reconcile worker<br/>+ sweep"]
+    IW["ingest worker<br/>normalize + Zod + idempotent upsert"]
+  end
+
+  subgraph MONGO["MongoDB (every row carries tenantId)"]
+    RR[("raw_records")]
+    SS[("sync_state<br/>cursor")]
+    EVT[("events spine")]
+    DLQ[("dead_letter")]
+  end
+
+  NG -->|"sync webhook = notification only"| WH
+  WH -->|"enqueue"| SQ
+  TRIG -->|"enqueue"| RQ
+  TRIG -->|"replay / backfill"| IQ
+
+  SQ --> SW
+  RQ --> RW
+  IQ --> IW
+
+  SW -->|"listRecords(modifiedAfter)"| NG
+  RW -->|"listRecords(cursor)"| NG
+  RW <-->|"checkpoint cursor after page lands"| SS
+  SW -->|"land"| RR
+  RW -->|"land"| RR
+  SW -->|"fan out 1 job/record"| IQ
+  RW -->|"fan out 1 job/record"| IQ
+
+  IW -->|"idempotent upsert"| EVT
+  IW -.->|"transient: retry w/ backoff"| IQ
+  IW -->|"terminal failure"| DLQ
+
+  RR -.->|"backfill"| IQ
+  DLQ -.->|"replay verbatim, same key"| IQ
+
+  EVT --> READ
+  DLQ --> READ
+  READ --> DASH["React dashboard<br/>tenant switcher"]
+```
+
+The same ingest/DLQ/replay core, drawn closer in:
+
 ```
 Nango-shaped records ─▶ raw_records ─▶ ingest queue (BullMQ) ─▶ worker (process)
                             │                                        │
