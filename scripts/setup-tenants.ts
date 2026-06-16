@@ -19,8 +19,8 @@ import { config } from '../src/config/env.js'
 import { connectDB, disconnectDB } from '../src/db/connect.js'
 import { Tenant, Connection } from '../src/models/index.js'
 
-const NANGO_CONNECTION_ID = process.argv[2] || '9c5c2fd8-3cc4-4928-96e7-59c8e483a0cd'
-const INTEGRATION_ID = process.argv[3] || 'github'
+const NANGO_CONNECTION_ID = process.argv[2];
+const INTEGRATION_ID = process.argv[3];
 
 const TENANTS = [
   { name: 'Acme', apiKey: 'acme-api-key' },
