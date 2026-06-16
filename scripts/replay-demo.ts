@@ -1,5 +1,5 @@
 /**
- * Milestone 3 demo — the money shot: failure -> DLQ -> replay -> no duplicate.
+ * Milestone 3 — failure -> DLQ -> replay -> no duplicate.
  *
  *   npm run replay-demo
  *

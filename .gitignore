@@ -8,5 +8,5 @@ coverage/
 dist/
 .vitest/
 
-# Internal build/interview spec — kept local, not part of the deliverable repo
+# Local design notes — not committed
 shiplog-sync-prototype-spec.md

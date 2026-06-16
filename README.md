@@ -74,7 +74,7 @@ a job, or replaying a DLQ item safe. The property is covered by the test suite
 (`test/ingest.test.ts`) and demonstrated end to end by the Milestone 3
 **failure → replay → no-duplicate** demo below (`npm run replay-demo`).
 
-### The Milestone 2 demo — failure → retry/backoff → DLQ
+### Milestone 2 — failure → retry/backoff → DLQ
 
 Ingestion now runs through a **BullMQ** `ingest` queue with a **separate worker
 process**. Two terminals:
@@ -104,7 +104,7 @@ A `logical` failure skips retries entirely and is dead-lettered after 1 attempt.
 Retries are safe because the processor calls the same idempotent `ingestEvent` from
 Milestone 1 — re-processing can't duplicate.
 
-### The Milestone 3 demo — failure → DLQ → replay → no duplicate (the money shot)
+### Milestone 3 — failure → DLQ → replay → no duplicate
 
 ```bash
 npm run replay-demo
@@ -240,6 +240,13 @@ skipping a record. *Advances on success, holds on failure.*
 A reconcile job uses a **deterministic jobId** (`reconcile:<connectionId>:<model>`)
 so a manual trigger and a scheduled tick collapse onto one in-flight job instead
 of racing the same cursor — the cursor stays single-writer.
+
+A failed reconcile job has **no DLQ** — and doesn't need one. Transient records-API
+errors retry with backoff (up to 5 attempts); if they're exhausted, the job is simply
+dropped (`removeOnFail`) and the **next sweep re-enqueues it from the same held cursor**.
+Reconcile *is* the safety net, so a failure just waits for the next cycle — only the
+*ingest* (processing) path dead-letters, because a bad payload can't be fixed by
+retrying, but an unreachable Nango is fixed by trying again later.
 
 > **Layering (stated precisely):** a cursor that advanced means records are
 > durably in `raw_records` **and** an ingest job is enqueued — *not* that they're
@@ -380,7 +387,7 @@ index. Each distinct source *version* is its own row, so:
   even under concurrent workers).
 - Replaying a *stale* version can never overwrite current state — it just lands (or
   no-ops) as history. This is what makes the **failure → replay → no-duplicate**
-  demo (Milestone 3, the headline deliverable) correct rather than a silent state
+  demo (Milestone 3) correct rather than a silent state
   regression. An upsert-latest model would revert current state when a
   failed-then-replayed old version arrives.
 
@@ -543,7 +550,7 @@ Two tiers:
 
 - **M0 ✅** scaffold, models + indexes, tenant API-key middleware
 - **M1 ✅** Zod event schema, unique idempotency index, idempotent upsert +
-  content-hash dedup, fixtures, verify demo
+  content-hash dedup, fixtures
 - **M2 ✅** BullMQ pipeline: retry/backoff + jitter, error classifier, DLQ
   persistence, separate worker process, failure injection
 - **M3 ✅** replay / backfill — `POST /dlq/:id/replay`, `POST /connections/:id/backfill`,
@@ -555,6 +562,5 @@ Two tiers:
 - **M6 ✅** React + React Query dashboard (Vite): tenant switcher (isolation),
   sync control (reconcile/backfill), sync-runs, DLQ + replay, events — plus
   `GET /connections`, `GET /sync-runs`, and a two-tenant setup (`npm run setup-tenants`)
-- **M7 ✅** README (design rationale, the stack-mapping table, limitations), the
-  negative multi-tenant isolation test (`test/isolation.test.ts`), and a rehearsal
-  checklist ([`DEMO.md`](DEMO.md))
+- **M7 ✅** README (design rationale, the stack-mapping table, limitations) and the
+  negative multi-tenant isolation test (`test/isolation.test.ts`)

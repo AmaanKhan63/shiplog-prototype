@@ -76,6 +76,12 @@ never skipping a record. *Advances on success, holds on failure.* A reconcile jo
 uses a deterministic job id per `(connection, model)`, so a manual trigger and a scheduled
 tick collapse onto a single in-flight job rather than racing each other for the cursor.
 
+A failed reconcile job is **not** dead-lettered — it has no DLQ, and doesn't need one. Its
+retries back off (up to 5 attempts); if they're exhausted the job is dropped and the next
+sweep simply re-runs it from the same held cursor. Reconcile is itself the safety net, so a
+failure just waits for the next cycle; only the ingest path dead-letters, because a bad
+payload can't be fixed by retrying while an unreachable Nango is fixed by trying again later.
+
 > The two paths guard different failures. Reconcile is the **delivery** safety net — it
 > makes sure every record arrives. The retry/dead-letter logic below is the **processing**
 > safety net — it makes sure every arrived record is handled correctly.
