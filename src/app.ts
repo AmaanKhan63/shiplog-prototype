@@ -165,7 +165,7 @@ export function buildApp({ ingestQueue, nangoSyncQueue, reconcileQueue, nangoWeb
       if (requested !== undefined && typeof requested !== 'string') return res.status(400).json({ error: 'model must be a string' })
       const connection = await Connection.findOne({ _id: id, tenantId: req.tenantId })
       if (!connection) return res.status(404).json({ error: 'Connection not found' })
-      const models = requested ? [requested] : (connection.models?.length ? connection.models : ['GithubIssue'])
+      const models = requested ? [requested] : (connection.models?.length ? connection.models : ['Commit'])
       for (const model of models) await enqueueReconcileJob(reconcileQueue, connection, model)
       res.status(202).json({ ok: true, connectionId: String(connection._id), models, enqueued: models.length })
     } catch (err) {

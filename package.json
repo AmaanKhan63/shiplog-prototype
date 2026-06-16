@@ -16,6 +16,7 @@
     "replay-demo": "tsx scripts/replay-demo.ts",
     "reconcile-demo": "tsx scripts/reconcile-demo.ts",
     "connect": "tsx scripts/connect.ts",
+    "setup-tenants": "tsx scripts/setup-tenants.ts",
     "simulate-webhook": "tsx scripts/simulate-nango-webhook.ts",
     "typecheck": "tsc --noEmit",
     "test": "vitest run",

@@ -53,7 +53,7 @@ export function makeReconcileSweep({ reconcileQueue }: { reconcileQueue: Queue }
     const connections = await Connection.find({ status: 'active', nangoConnectionId: { $ne: null } }).lean()
     let swept = 0
     for (const connection of connections) {
-      const models = connection.models?.length ? connection.models : ['GithubIssue']
+      const models = connection.models?.length ? connection.models : ['Commit']
       for (const model of models) {
         await enqueueReconcileJob(reconcileQueue, connection, model)
         swept += 1
